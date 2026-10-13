@@ -1,0 +1,298 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    elementFormDefault="qualified"
+    attributeFormDefault="unqualified">
+    <!-- ================================================== -->
+    <!-- Root: database                                     -->
+    <!-- ================================================== -->
+    <xs:element name="database">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="extensions"
+                    type="ExtensionsType"
+                    minOccurs="0" />
+                <xs:element name="tables"
+                    type="TablesType"
+                    minOccurs="0" />
+                <xs:element name="statements"
+                    type="StatementsType"
+                    minOccurs="0" />
+            </xs:sequence>
+            <xs:attribute name="name"
+                type="xs:string"
+                use="required" />
+            <xs:attribute name="source"
+                type="xs:string"
+                use="optional" />
+            <xs:attribute name="dialect"
+                type="DialectType"
+                default="postgresql" />
+        </xs:complexType>
+    </xs:element>
+    <!-- ================================================== -->
+    <!-- Common simple types                                -->
+    <!-- ================================================== -->
+    <xs:simpleType name="DialectType">
+        <xs:restriction base="xs:token">
+            <xs:enumeration value="postgresql" />
+        </xs:restriction>
+    </xs:simpleType>
+    <xs:simpleType name="SqlIdentifierType">
+        <xs:restriction base="xs:string">
+            <xs:minLength value="1" />
+            <xs:maxLength value="63" />
+        </xs:restriction>
+    </xs:simpleType>
+    <xs:simpleType name="ReferentialActionType">
+        <xs:restriction base="xs:token">
+            <xs:enumeration value="NO ACTION" />
+            <xs:enumeration value="RESTRICT" />
+            <xs:enumeration value="CASCADE" />
+            <xs:enumeration value="SET NULL" />
+            <xs:enumeration value="SET DEFAULT" />
+        </xs:restriction>
+    </xs:simpleType>
+    <xs:simpleType name="IndexMethodType">
+        <xs:restriction base="xs:token">
+            <xs:enumeration value="btree" />
+            <xs:enumeration value="hash" />
+            <xs:enumeration value="gin" />
+            <xs:enumeration value="gist" />
+            <xs:enumeration value="spgist" />
+            <xs:enumeration value="brin" />
+        </xs:restriction>
+    </xs:simpleType>
+    <xs:simpleType name="SortOrderType">
+        <xs:restriction base="xs:token">
+            <xs:enumeration value="ASC" />
+            <xs:enumeration value="DESC" />
+        </xs:restriction>
+    </xs:simpleType>
+    <!-- ================================================== -->
+    <!-- Extensions                                         -->
+    <!-- ================================================== -->
+    <xs:complexType name="ExtensionsType">
+        <xs:sequence>
+            <xs:element name="extension"
+                type="ExtensionType"
+                minOccurs="1"
+                maxOccurs="unbounded" />
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="ExtensionType">
+        <xs:attribute name="name"
+            type="SqlIdentifierType"
+            use="required" />
+        <xs:attribute name="if-not-exists"
+            type="xs:boolean"
+            default="true" />
+    </xs:complexType>
+    <!-- ================================================== -->
+    <!-- Tables                                             -->
+    <!-- ================================================== -->
+    <xs:complexType name="TablesType">
+        <xs:sequence>
+            <xs:element name="table"
+                type="TableType"
+                minOccurs="1"
+                maxOccurs="unbounded" />
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="TableType">
+        <xs:sequence>
+            <xs:element name="columns"
+                type="ColumnsType" />
+            <xs:element name="constraints"
+                type="ConstraintsType"
+                minOccurs="0" />
+            <xs:element name="indexes"
+                type="IndexesType"
+                minOccurs="0" />
+            <xs:element name="partition-by"
+                type="PartitionByType"
+                minOccurs="0" />
+        </xs:sequence>
+        <xs:attribute name="name"
+            type="SqlIdentifierType"
+            use="required" />
+        <xs:attribute name="if-not-exists"
+            type="xs:boolean"
+            default="true" />
+        <xs:attribute name="comment"
+            type="xs:string"
+            use="optional" />
+    </xs:complexType>
+    <xs:complexType name="PartitionByType">
+        <xs:attribute name="method" use="required">
+            <xs:simpleType>
+                <xs:restriction base="xs:token">
+                    <xs:enumeration value="RANGE" />
+                    <xs:enumeration value="LIST" />
+                    <xs:enumeration value="HASH" />
+                </xs:restriction>
+            </xs:simpleType>
+        </xs:attribute>
+        <xs:attribute name="columns" type="xs:token" use="required" />
+    </xs:complexType>
+    <!-- ================================================== -->
+    <!-- Columns                                            -->
+    <!-- ================================================== -->
+    <xs:complexType name="ColumnsType">
+        <xs:sequence>
+            <xs:element name="column"
+                type="ColumnType"
+                minOccurs="1"
+                maxOccurs="unbounded" />
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="ColumnType">
+        <xs:attribute name="name"
+            type="SqlIdentifierType"
+            use="required" />
+        <xs:attribute name="type"
+            type="xs:token"
+            use="required" />
+        <xs:attribute name="nullable"
+            type="xs:boolean"
+            default="true" />
+        <xs:attribute name="default"
+            type="xs:string"
+            use="optional" />
+        <xs:attribute name="comment"
+            type="xs:string"
+            use="optional" />
+        <xs:attribute name="identity"
+            type="xs:boolean"
+            use="optional" />
+        <xs:attribute name="collation"
+            type="xs:string"
+            use="optional" />
+    </xs:complexType>
+    <!-- ================================================== -->
+    <!-- Constraints                                        -->
+    <!-- ================================================== -->
+    <xs:complexType name="ConstraintsType">
+        <xs:choice minOccurs="1" maxOccurs="unbounded">
+            <xs:element name="primary-key"
+                type="PrimaryKeyType" />
+            <xs:element name="unique"
+                type="UniqueType" />
+            <xs:element name="check"
+                type="CheckType" />
+            <xs:element name="foreign-key"
+                type="ForeignKeyType" />
+        </xs:choice>
+    </xs:complexType>
+    <xs:complexType name="PrimaryKeyType">
+        <xs:attribute name="name"
+            type="SqlIdentifierType"
+            use="required" />
+        <xs:attribute name="columns"
+            type="xs:token"
+            use="required" />
+    </xs:complexType>
+    <xs:complexType name="UniqueType">
+        <xs:attribute name="name"
+            type="SqlIdentifierType"
+            use="required" />
+        <xs:attribute name="columns"
+            type="xs:token"
+            use="required" />
+    </xs:complexType>
+    <xs:complexType name="CheckType">
+        <xs:attribute name="name"
+            type="SqlIdentifierType"
+            use="required" />
+        <xs:attribute name="expression"
+            type="xs:string"
+            use="required" />
+    </xs:complexType>
+    <xs:complexType name="ForeignKeyType">
+        <xs:attribute name="name"
+            type="SqlIdentifierType"
+            use="required" />
+        <xs:attribute name="columns"
+            type="xs:token"
+            use="required" />
+        <xs:attribute name="references-table"
+            type="SqlIdentifierType"
+            use="required" />
+        <xs:attribute name="references-columns"
+            type="xs:token"
+            use="required" />
+        <xs:attribute name="on-delete"
+            type="ReferentialActionType"
+            default="NO ACTION" />
+        <xs:attribute name="on-update"
+            type="ReferentialActionType"
+            default="NO ACTION" />
+    </xs:complexType>
+    <!-- ================================================== -->
+    <!-- Indexes                                            -->
+    <!-- ================================================== -->
+    <xs:complexType name="IndexesType">
+        <xs:sequence>
+            <xs:element name="index"
+                type="IndexType"
+                minOccurs="1"
+                maxOccurs="unbounded" />
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="IndexType">
+        <xs:sequence>
+            <xs:element name="column"
+                type="IndexColumnType"
+                minOccurs="1"
+                maxOccurs="unbounded" />
+        </xs:sequence>
+        <xs:attribute name="name"
+            type="SqlIdentifierType"
+            use="required" />
+        <xs:attribute name="unique"
+            type="xs:boolean"
+            default="false" />
+        <xs:attribute name="method"
+            type="IndexMethodType"
+            default="btree" />
+        <xs:attribute name="if-not-exists"
+            type="xs:boolean"
+            default="true" />
+        <xs:attribute name="where"
+            type="xs:string"
+            use="optional" />
+        <xs:attribute name="comment"
+            type="xs:string"
+            use="optional" />
+    </xs:complexType>
+    <xs:complexType name="IndexColumnType">
+        <xs:attribute name="name"
+            type="SqlIdentifierType"
+            use="required" />
+        <xs:attribute name="order"
+            type="SortOrderType"
+            default="ASC" />
+    </xs:complexType>
+    <!-- ================================================== -->
+    <!-- Optional raw SQL statements                        -->
+    <!-- ================================================== -->
+    <xs:complexType name="StatementsType">
+        <xs:sequence>
+            <xs:element name="statement"
+                type="StatementType"
+                minOccurs="1"
+                maxOccurs="unbounded" />
+        </xs:sequence>
+    </xs:complexType>
+    <xs:complexType name="StatementType">
+        <xs:sequence>
+            <xs:element name="description"
+                type="xs:string"
+                minOccurs="0" />
+            <xs:element name="sql"
+                type="xs:string" />
+        </xs:sequence>
+        <xs:attribute name="id"
+            type="SqlIdentifierType"
+            use="required" />
+    </xs:complexType>
+</xs:schema>

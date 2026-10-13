@@ -1,0 +1,91 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<database name="auto_test_service" dialect="postgresql" source="context/requirement/1-1.support_mang_proj/spec.md">
+  <tables>
+    <table name="projects" comment="项目；名称系统内唯一，关联文件及版本由程序事务清理" if-not-exists="true">
+      <columns>
+        <column name="id" type="integer" nullable="false" comment="项目唯一 ID，数据库自增整数" identity="true"/>
+        <column name="name" type="varchar(120)" nullable="false" comment="去除首尾空格的项目名称，区分大小写唯一" collation="&quot;C&quot;"/>
+        <column name="description" type="varchar(2000)" nullable="false" comment="项目说明" default="''"/>
+        <column name="created_at" type="timestamptz" nullable="false" comment="创建时间" default="now()"/>
+        <column name="updated_at" type="timestamptz" nullable="false" comment="项目属性最后更新时间，由业务更新时显式设置" default="now()"/>
+      </columns>
+      <constraints>
+        <primary-key name="pk_projects" columns="id"/>
+        <unique name="uq_projects_name" columns="name"/>
+      </constraints>
+      <indexes>
+        <index name="ix_projects_updated_id" comment="项目列表按更新时间降序、ID 升序分页" if-not-exists="true">
+          <column name="updated_at" order="DESC"/>
+          <column name="id" order="ASC"/>
+        </index>
+      </indexes>
+    </table>
+    <table name="yaml_files" comment="项目内的逻辑 YAML 文件；更新保留文件 ID，当前版本指向不可变历史版本" if-not-exists="true">
+      <columns>
+        <column name="id" type="integer" nullable="false" comment="逻辑文件唯一 ID，数据库自增整数" identity="true"/>
+        <column name="project_id" type="integer" nullable="false" comment="所属项目 ID"/>
+        <column name="name" type="varchar(120)" nullable="false" comment="项目内唯一的逻辑文件名" collation="&quot;C&quot;"/>
+        <column name="current_version" type="integer" nullable="false" comment="当前版本号，从 1 开始；与版本记录在同一事务写入" default="1"/>
+        <column name="created_at" type="timestamptz" nullable="false" comment="首次导入时间" default="now()"/>
+        <column name="updated_at" type="timestamptz" nullable="false" comment="最近一次成功更新的时间，由业务显式更新" default="now()"/>
+      </columns>
+      <constraints>
+        <primary-key name="pk_yaml_files" columns="id"/>
+        <unique name="uq_yaml_files_project_name" columns="project_id,name"/>
+      <check name="ck_yaml_files_id" expression="id &gt; 0"/></constraints>
+      <indexes>
+        <index name="ix_yaml_files_project_updated_id" comment="项目文件列表及关联查询" if-not-exists="true">
+          <column name="project_id" order="ASC"/>
+          <column name="updated_at" order="DESC"/>
+          <column name="id" order="ASC"/>
+        </index>
+      </indexes>
+    </table>
+    <table name="yaml_versions" comment="不可变 YAML 版本，原始内容和解析结果一次性保存；禁止 UPDATE，删除逻辑文件时由程序清理" if-not-exists="true">
+      <columns>
+        <column name="file_id" type="integer" nullable="false" comment="所属逻辑文件 ID"/>
+        <column name="version" type="integer" nullable="false" comment="文件内递增版本号，与 file_id 组成主键"/>
+        <column name="filename" type="text" nullable="false" comment="上传文件名，不含目录路径"/>
+        <column name="imported_at" type="timestamptz" nullable="false" comment="成功导入时间" default="now()"/>
+        <column name="interface_count" type="integer" nullable="false" comment="该版本接口数量，导入事务中校验与实际接口集合一致"/>
+        <column name="openapi_version" type="varchar(16)" nullable="false" comment="源文档 OpenAPI 版本，仅支持 3.0.x"/>
+        <column name="title" type="text" nullable="false" comment="源文档 info.title"/>
+        <column name="api_version" type="text" nullable="false" comment="源文档 info.version，区别于本系统版本号"/>
+        <column name="original_content" type="text" nullable="false" comment="UTF-8 原始 YAML，最多 5 MiB；读取展示必须经过敏感信息脱敏"/>
+        <column name="parsed_document" type="jsonb" nullable="false" comment="完整解析后的 OpenAPI 文档；保留 components 引用及认证定义，返回客户端前脱敏"/>
+      </columns>
+      <constraints>
+        <primary-key name="pk_yaml_versions" columns="file_id,version"/>
+      </constraints>
+    </table>
+    <table name="api_interfaces" comment="版本内的接口定义，ID 不跨版本复用；接口详情均来自导入解析，禁止 UPDATE" if-not-exists="true">
+      <columns>
+        <column name="id" type="integer" nullable="false" comment="接口记录 ID，数据库自增整数" identity="true"/>
+        <column name="file_id" type="integer" nullable="false" comment="所属逻辑文件 ID"/>
+        <column name="version" type="integer" nullable="false" comment="所属文件版本号"/>
+        <column name="method" type="varchar(8)" nullable="false" comment="大写 HTTP 方法"/>
+        <column name="path" type="text" nullable="false" comment="源接口路径"/>
+        <column name="operation_id" type="text" nullable="false" comment="源 operationId，缺省为空字符串" default="''"/>
+        <column name="summary" type="text" nullable="false" comment="源接口摘要" default="''"/>
+        <column name="description" type="text" nullable="false" comment="源接口说明" default="''"/>
+        <column name="parameters" type="jsonb" nullable="false" comment="合并后的 path/query/header 参数数组，保留 Schema；读取时脱敏" default="'[]'::jsonb"/>
+        <column name="request_body" type="jsonb" nullable="true" comment="JSON 或 multipart 请求体结构；没有请求体时为 SQL NULL"/>
+        <column name="responses" type="jsonb" nullable="false" comment="源 responses 映射，读取时脱敏"/>
+        <column name="authentication" type="jsonb" nullable="false" comment="有效 securitySchemes 与 security，仅展示不自动生成认证头" default="'{&quot;schemes&quot;:{},&quot;requirements&quot;:[]}'::jsonb"/>
+        <column name="servers" type="jsonb" nullable="false" comment="有效 servers 数组，仅展示" default="'[]'::jsonb"/>
+      </columns>
+      <constraints>
+        <primary-key name="pk_api_interfaces" columns="id"/>
+        <unique name="uq_api_interfaces_operation" columns="file_id,version,method,path"/>
+      <check name="ck_api_interfaces_id" expression="id &gt; 0"/></constraints>
+      <indexes>
+        <index name="ix_api_interfaces_version_path_method" comment="按文件版本浏览接口并按路径、方法排序" if-not-exists="true">
+          <column name="file_id" order="ASC"/>
+          <column name="version" order="ASC"/>
+          <column name="path" order="ASC"/>
+          <column name="method" order="ASC"/>
+        </index>
+      </indexes>
+    </table>
+  </tables>
+</database>

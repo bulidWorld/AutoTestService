@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>接口资产 · AutoTestService</title>
+<style>
+:root{color-scheme:light;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#173347;background:#f4f7fa}*{box-sizing:border-box}body{margin:0}header{background:#142e40;color:#fff;padding:24px max(24px,calc((100vw - 1180px)/2))}header p{color:#b8cfdf;margin:8px 0 0;font-size:14px}h1{font-size:24px;margin:0}main{max-width:1180px;margin:24px auto;padding:0 20px}.panel{background:white;border:1px solid #dbe4ec;border-radius:12px;padding:22px;margin-bottom:18px}h2{font-size:17px;margin:0 0 18px}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}.grid.config{grid-template-columns:1fr 140px}label{display:block;font-size:13px;font-weight:600;color:#3f596a}input,select,textarea,button{font:inherit}input,select,textarea{width:100%;padding:10px;border:1px solid #c7d4de;border-radius:6px;margin-top:7px;background:#fff;color:#173347}input:disabled,select:disabled{background:#f0f3f6}textarea{font-family:ui-monospace,monospace;line-height:1.5;resize:vertical}input[type=checkbox]{width:auto;margin:0 7px 0 0}button{background:#0c716f;color:#fff;padding:10px 18px;border:0;border-radius:6px;cursor:pointer}button:disabled{opacity:.5;cursor:default}.secondary{background:#e8f0f5;color:#234a63}.small{font-size:12px;padding:7px 10px}.toolbar{display:flex;gap:10px;align-items:center;margin-top:16px}.muted{font-size:13px;color:#627a8a}.method{display:inline-block;padding:4px 9px;background:#e0f2ed;border-radius:4px;color:#08735e;font-size:13px;margin-right:10px}.endpoint{font:14px ui-monospace,monospace;word-break:break-all}.parameter{display:grid;grid-template-columns:190px minmax(0,1fr) 75px;gap:14px;align-items:center;border-top:1px solid #e8edf1;padding:12px 0}.parameter .meta{font-size:12px;color:#708796;margin-top:5px}.inline{display:flex;align-items:center;gap:6px}.extra{display:grid;grid-template-columns:180px 1fr 80px 55px;gap:10px;align-items:center;margin-top:10px}#notice{padding:12px 16px;border-radius:6px;background:#eaf3f8;color:#34566f;margin-bottom:18px;white-space:pre-wrap}#notice.error{background:#ffefed;color:#a33225}.stats{display:flex;gap:24px;flex-wrap:wrap;margin:12px 0}.success{color:#08735e}.failed{color:#b84235}pre{background:#f6f8fa;border:1px solid #e1e7ed;border-radius:6px;padding:14px;font-size:13px;line-height:1.5;overflow:auto;max-height:420px;white-space:pre-wrap;overflow-wrap:anywhere}details{margin-top:16px}summary{font-size:14px;font-weight:600;cursor:pointer}a{color:inherit}dialog{border:1px solid #c7d4de;border-radius:12px;width:min(460px,90vw);padding:24px}dialog::backdrop{background:#102d4266}[hidden]{display:none!important}@media(max-width:700px){.grid{grid-template-columns:1fr 1fr}.grid.config{grid-template-columns:1fr}.parameter{grid-template-columns:1fr}.extra{grid-template-columns:1fr 1fr}.panel{padding:16px}}
+</style>
+<script src="/static/asset-test.js" defer></script>
+</head>
+<body>
+<header><h1>项目与接口管理</h1><p>接口资产 / 单次测试 <span style="float:right"><a href="/docs">API 文档</a></span></p></header>
+<main>
+<div id="notice" role="status" aria-live="polite">正在读取接口资产…</div>
+<section class="panel"><h2>1. 选择接口资产</h2><div class="grid">
+<label>项目<select id="project" aria-label="项目"></select></label>
+<label>YAML 文件<select id="file" aria-label="YAML 文件" disabled></select></label>
+<label>版本<select id="version" aria-label="版本" disabled></select></label>
+<label>接口<select id="interface" aria-label="接口" disabled></select></label>
+</div><div class="toolbar"><button id="reload" class="secondary small">刷新资产</button><button id="create-project" class="secondary small">新建项目</button><button id="import-yaml" class="secondary small" disabled>导入 YAML</button></div><p id="endpoint" class="endpoint muted">选择具体版本的接口以输入参数。</p></section>
+<section class="panel" id="configuration" hidden><h2>2. 填写测试参数</h2>
+<form id="test-form"><div class="grid config"><label>运行地址<input id="base-url" type="url" placeholder="https://api.example.com/service" required autocomplete="off"><span class="muted">允许路径前缀，不包含 query 或 fragment。</span></label><label>超时（秒）<input id="timeout" type="number" value="30" min="1" max="300" required></label></div>
+<div id="parameters" style="margin-top:20px"></div>
+<h3 style="font-size:14px;margin:22px 0 8px">额外请求头</h3><div id="extra-headers"></div><button id="add-header" type="button" class="secondary small" style="margin-top:10px">添加请求头</button>
+<div id="body-panel" hidden style="margin-top:20px"><label class="inline"><input id="send-body" type="checkbox">发送 JSON 请求体</label><details><summary>查看请求体字段定义</summary><pre id="body-schema"></pre></details><textarea id="request-body" rows="8" aria-label="JSON 请求体" spellcheck="false"></textarea><label class="inline" style="margin-top:8px"><input id="body-sensitive" type="checkbox">请求体含敏感数据，隐藏请求体与响应体</label></div>
+<p id="unsupported" class="failed" hidden>此接口使用 multipart 请求体，当前单次测试仅支持 JSON 请求体。</p>
+<div class="toolbar"><button id="run-test" type="submit">单次测试</button><span class="muted">发送一次真实请求；无重试，不跟随重定向。</span></div></form></section>
+<section class="panel" id="result-panel" hidden><h2>3. 测试结果</h2><div id="stats" class="stats"></div><p id="result-error" class="failed" hidden></p><p id="redacted-note" class="muted" hidden>结果中的敏感参数及认证头已隐藏。</p><details open><summary>请求</summary><pre id="request-result"></pre></details><details open><summary>响应</summary><pre id="response-result"></pre></details></section>
+</main>
+<dialog id="project-dialog"><form id="project-form"><h2>新建项目</h2><label>名称<input id="project-name" maxlength="120" required></label><label style="margin-top:14px">描述<textarea id="project-description" maxlength="2000" rows="3"></textarea></label><div class="toolbar"><button type="submit">创建</button><button type="button" class="secondary" data-close="project-dialog">取消</button></div></form></dialog>
+<dialog id="import-dialog"><form id="import-form"><h2>导入 YAML</h2><label>逻辑文件名<input id="yaml-name" maxlength="120" required></label><label style="margin-top:14px">YAML 文件<input id="yaml-upload" type="file" accept=".yaml,.yml" required></label><div class="toolbar"><button type="submit">导入</button><button type="button" class="secondary" data-close="import-dialog">取消</button></div></form></dialog>
+</body></html>

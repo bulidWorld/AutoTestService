@@ -1,0 +1,8 @@
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+PyYAML>=6,<7
+psycopg[binary]>=3.2,<4
+lxml>=5,<7
+openapi-spec-validator>=0.7,<0.9
+python-multipart>=0.0.20,<1
+jsonschema>=4.23,<5

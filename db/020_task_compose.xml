@@ -1,0 +1,196 @@
+<?xml version='1.0' encoding='utf-8'?>
+<database name="auto_test_service" dialect="postgresql" source="context/requirement/1-2.support_task_compose/spec.md">
+  <tables>
+    <table name="tasks" comment="项目任务；名称唯一、关联、取值及删除限制由程序校验；保存整个配置需事务及行锁" if-not-exists="true">
+      <columns>
+        <column name="id" type="integer" nullable="false" identity="true" comment="数据库自增整数主键" />
+        <column name="project_id" type="integer" comment="所属项目 ID" nullable="false" />
+        <column name="name" type="varchar(120)" comment="项目内唯一名称，程序去除首尾空白" nullable="false" />
+        <column name="description" type="varchar(2000)" comment="任务描述" nullable="false" default="''" />
+        <column name="base_url" type="text" comment="HTTP/HTTPS 运行地址，允许路径前缀，禁止 query/fragment" nullable="false" />
+        <column name="timeout_seconds" type="integer" comment="请求超时秒数，程序校验 1～300" nullable="false" default="30" />
+        <column name="created_at" type="timestamptz" comment="创建时间" nullable="false" default="now()" />
+        <column name="updated_at" type="timestamptz" comment="更新时间，业务显式更新" nullable="false" default="now()" />
+      </columns>
+      <constraints>
+        <primary-key name="pk_tasks" columns="id" />
+      </constraints>
+      <indexes>
+        <index name="ix_tasks_project_updated" if-not-exists="true">
+          <column name="project_id" order="ASC" />
+          <column name="updated_at" order="DESC" />
+          <column name="id" order="ASC" />
+        </index>
+        <index name="ix_tasks_project_name" if-not-exists="true">
+          <column name="project_id" order="ASC" />
+          <column name="name" order="ASC" />
+        </index>
+      </indexes>
+    </table>
+    <table name="task_parameters" comment="全局参数配置，取值来源 fixed/rest；按 position 初始化，名称、类型、引用及归属均由程序校验；REST 预览值不作为执行值保存" if-not-exists="true">
+      <columns>
+        <column name="id" type="integer" nullable="false" identity="true" comment="数据库自增整数主键" />
+        <column name="task_id" type="integer" comment="所属任务 ID" nullable="false" />
+        <column name="name" type="varchar(120)" comment="任务内唯一参数名" nullable="false" />
+        <column name="value_type" type="varchar(16)" comment="string/integer/number/boolean/object/array" nullable="false" />
+        <column name="value" type="jsonb" comment="fixed 的 JSON 类型值；rest 必须为 SQL NULL，不缓存预览或上次运行值" nullable="true" />
+        <column name="sensitive" type="boolean" comment="是否敏感" nullable="false" default="false" />
+        <column name="position" type="integer" comment="全局参数初始化顺序，从 1 连续递增；依赖仅允许引用前序参数" nullable="false" />
+        <column name="source_type" type="varchar(16)" comment="fixed 固定值 / rest REST 动态获取" nullable="false" default="'fixed'" />
+        <column name="rest_source" type="jsonb" comment="REST 配置仅保存 step_id（本任务 task_steps.id）与 extract_expression；接口、版本及 bindings 从该步骤读取；fixed 为 SQL NULL" nullable="true" />
+      </columns>
+      <constraints>
+        <primary-key name="pk_task_parameters" columns="id" />
+      </constraints>
+      <indexes>
+        <index name="ix_task_parameters_task_name" if-not-exists="true">
+          <column name="task_id" order="ASC" />
+          <column name="name" order="ASC" />
+        </index>
+      </indexes>
+    </table>
+    <table name="task_steps" comment="有序步骤，稳定 ID；被 REST 全局参数引用的步骤在初始化阶段执行一次，不在任务步骤阶段重复执行；删除被引用步骤前需解除引用" if-not-exists="true">
+      <columns>
+        <column name="id" type="integer" nullable="false" identity="true" comment="数据库自增整数主键" />
+        <column name="task_id" type="integer" comment="所属任务 ID" nullable="false" />
+        <column name="position" type="integer" comment="展示及执行序号，从 1 连续递增" nullable="false" />
+        <column name="interface_id" type="integer" comment="本项目不可变版本接口 ID" nullable="false" />
+        <column name="file_id" type="integer" comment="绑定的逻辑文件 ID" nullable="false" />
+        <column name="version" type="integer" comment="显式选择的 YAML 版本，更新不自动切换" nullable="false" />
+        <column name="bindings" type="jsonb" comment="结构化绑定数组：location/name/binding；JSON 字段用 JSON Pointer，body 根用空字符串" nullable="false" default="'[]'::jsonb" />
+        <column name="created_at" type="timestamptz" comment="创建时间" nullable="false" default="now()" />
+        <column name="updated_at" type="timestamptz" comment="更新时间，业务显式更新" nullable="false" default="now()" />
+      </columns>
+      <constraints>
+        <primary-key name="pk_task_steps" columns="id" />
+      </constraints>
+      <indexes>
+        <index name="ix_task_steps_task_position" if-not-exists="true">
+          <column name="task_id" order="ASC" />
+          <column name="position" order="ASC" />
+        </index>
+        <index name="ix_task_steps_file_version" if-not-exists="true">
+          <column name="file_id" order="ASC" />
+          <column name="version" order="ASC" />
+        </index>
+      </indexes>
+    </table>
+    <table name="task_runs" comment="运行记录；快照创建后不可变由程序保证；锁定任务行检查 queued/running 后创建运行，禁止重复启动" if-not-exists="true">
+      <columns>
+        <column name="id" type="integer" nullable="false" identity="true" comment="数据库自增整数主键" />
+        <column name="task_id" type="integer" comment="所属任务 ID" nullable="false" />
+        <column name="project_id" type="integer" comment="所属项目 ID" nullable="false" />
+        <column name="status" type="varchar(16)" comment="queued/running/succeeded/failed" nullable="false" default="'queued'" />
+        <column name="config_snapshot" type="jsonb" comment="不可变任务配置及全部参数源接口定义；REST 结果不写回快照或任务，另存运行参数；读取脱敏" nullable="false" />
+        <column name="error_code" type="varchar(64)" comment="错误分类，包括 EXECUTION_INTERRUPTED" nullable="true" />
+        <column name="error_message" type="text" comment="脱敏错误原因" nullable="true" />
+        <column name="created_at" type="timestamptz" comment="接受运行时间" nullable="false" default="now()" />
+        <column name="started_at" type="timestamptz" comment="实际开始时间" nullable="true" />
+        <column name="finished_at" type="timestamptz" comment="结束时间" nullable="true" />
+        <column name="duration_ms" type="bigint" comment="运行耗时毫秒" nullable="true" />
+      </columns>
+      <constraints>
+        <primary-key name="pk_task_runs" columns="id" />
+      </constraints>
+      <indexes>
+        <index name="ix_task_runs_task_created" if-not-exists="true">
+          <column name="task_id" order="ASC" />
+          <column name="created_at" order="DESC" />
+          <column name="id" order="ASC" />
+        </index>
+        <index name="ix_task_runs_status" if-not-exists="true">
+          <column name="status" order="ASC" />
+        </index>
+      </indexes>
+    </table>
+    <table name="task_run_steps" comment="每次运行的步骤结果，初始化时为每一步建记录；执行失败后的步骤标记 skipped" if-not-exists="true">
+      <columns>
+        <column name="id" type="integer" nullable="false" identity="true" comment="数据库自增整数主键" />
+        <column name="run_id" type="integer" comment="所属运行 ID" nullable="false" />
+        <column name="step_id" type="integer" comment="快照中的原任务步骤 ID，任务步骤移除不影响历史" nullable="false" />
+        <column name="position" type="integer" comment="快照中的执行序号" nullable="false" />
+        <column name="status" type="varchar(16)" comment="pending/running/succeeded/failed/skipped" nullable="false" default="'pending'" />
+        <column name="started_at" type="timestamptz" comment="开始时间" nullable="true" />
+        <column name="finished_at" type="timestamptz" comment="结束时间" nullable="true" />
+        <column name="duration_ms" type="bigint" comment="耗时毫秒" nullable="true" />
+        <column name="error_code" type="varchar(64)" comment="HTTP_STATUS_ERROR/CONNECTION_ERROR/TIMEOUT/EXECUTION_INTERRUPTED 等" nullable="true" />
+        <column name="error_message" type="text" comment="脱敏失败或跳过原因" nullable="true" />
+      </columns>
+      <constraints>
+        <primary-key name="pk_task_run_steps" columns="id" />
+      </constraints>
+      <indexes>
+        <index name="ix_task_run_steps_run_position" if-not-exists="true">
+          <column name="run_id" order="ASC" />
+          <column name="position" order="ASC" />
+        </index>
+      </indexes>
+    </table>
+    <table name="task_requests" comment="所有请求关联具体运行步骤；被参数引用的步骤在 parameters 阶段请求一次，可供多个参数提取；发送前持久化，由程序校验关联" if-not-exists="true">
+      <columns>
+        <column name="id" type="integer" nullable="false" identity="true" comment="数据库自增整数主键" />
+        <column name="run_id" type="integer" comment="所属运行 ID" nullable="false" />
+        <column name="run_step_id" type="integer" comment="运行步骤结果 ID" nullable="false" />
+        <column name="step_id" type="integer" comment="原任务稳定步骤 ID" nullable="false" />
+        <column name="position" type="integer" comment="所属阶段的执行序号" nullable="false" />
+        <column name="method" type="varchar(8)" comment="HTTP 方法" nullable="false" />
+        <column name="actual_url" type="text" comment="实际发送 URL，含编码后的 path/query；返回和日志需脱敏" nullable="false" />
+        <column name="request_headers" type="jsonb" comment="请求头名称和值数组，保留重复头；敏感值返回前脱敏" nullable="false" />
+        <column name="request_body" type="text" comment="实际请求体文本，无体为 NULL；返回前脱敏" nullable="true" />
+        <column name="response_status" type="integer" comment="HTTP 状态码，无响应为 NULL" nullable="true" />
+        <column name="response_headers" type="jsonb" comment="响应头名称和值数组，保留重复头；Set-Cookie 默认脱敏" nullable="true" />
+        <column name="response_body" type="text" comment="响应体文本；非 UTF-8 可用 base64，返回前脱敏" nullable="true" />
+        <column name="response_body_encoding" type="varchar(16)" comment="utf-8/base64，无响应体为 NULL" nullable="true" />
+        <column name="started_at" type="timestamptz" comment="发送前记录时间" nullable="false" default="now()" />
+        <column name="finished_at" type="timestamptz" comment="响应或错误完成时间" nullable="true" />
+        <column name="duration_ms" type="bigint" comment="请求耗时毫秒" nullable="true" />
+        <column name="error_code" type="varchar(64)" comment="错误分类" nullable="true" />
+        <column name="error_message" type="text" comment="脱敏错误原因" nullable="true" />
+        <column name="redaction_metadata" type="jsonb" comment="脱敏定位元数据，包含 URL、请求和响应敏感字段；不得包含敏感原值" nullable="false" default="'{}'::jsonb" />
+        <column name="phase" type="varchar(16)" comment="parameters 全局参数初始化 / steps 任务步骤" nullable="false" default="'steps'" />
+        <column name="run_parameter_id" type="integer" comment="兼容旧字段，保留为 NULL；一个初始化步骤可供多个参数提取，关联使用 task_run_parameters.request_id" nullable="true" />
+      </columns>
+      <constraints>
+        <primary-key name="pk_task_requests" columns="id" />
+      </constraints>
+      <indexes>
+        <index name="ix_task_requests_run_position" if-not-exists="true">
+          <column name="run_id" order="ASC" />
+          <column name="position" order="ASC" />
+        </index>
+        <index name="ix_task_requests_run_step" if-not-exists="true">
+          <column name="run_step_id" order="ASC" />
+        </index>
+      </indexes>
+    </table>
+    <table name="task_run_parameters" comment="每次运行独立初始化的参数结果；启动时按快照创建 pending，敏感结果仅供执行，读取脱敏" if-not-exists="true">
+      <columns>
+        <column name="id" type="integer" comment="数据库自增整数主键" nullable="false" identity="true" />
+        <column name="run_id" type="integer" comment="所属运行 ID" nullable="false" />
+        <column name="parameter_id" type="integer" comment="快照中的任务参数稳定 ID" nullable="false" />
+        <column name="name" type="varchar(120)" comment="参数名称快照" nullable="false" />
+        <column name="position" type="integer" comment="初始化顺序" nullable="false" />
+        <column name="source_type" type="varchar(16)" comment="fixed/rest" nullable="false" />
+        <column name="value_type" type="varchar(16)" comment="预期数据类型" nullable="false" />
+        <column name="sensitive" type="boolean" comment="敏感标记" nullable="false" />
+        <column name="status" type="varchar(16)" comment="pending/running/succeeded/failed/skipped" nullable="false" />
+        <column name="value" type="jsonb" comment="本次运行获取值，未成功为 SQL NULL；不得直接返回敏感值" nullable="true" />
+        <column name="started_at" type="timestamptz" comment="初始化开始时间" nullable="true" />
+        <column name="finished_at" type="timestamptz" comment="初始化结束时间" nullable="true" />
+        <column name="duration_ms" type="bigint" comment="初始化耗时毫秒" nullable="true" />
+        <column name="error_code" type="varchar(64)" comment="HTTP_STATUS_ERROR/CONNECTION_ERROR/TIMEOUT/RESPONSE_NOT_JSON/EXTRACTION_NOT_FOUND/EXTRACTION_TYPE_ERROR/EXECUTION_INTERRUPTED" nullable="true" />
+        <column name="error_message" type="text" comment="脱敏失败原因" nullable="true" />
+        <column name="request_id" type="integer" nullable="true" comment="REST 所引用步骤的请求记录 ID；多个参数可引用同一个请求；fixed 为 NULL" />
+      </columns>
+      <constraints>
+        <primary-key name="pk_task_run_parameters" columns="id" />
+      </constraints>
+      <indexes>
+        <index name="ix_task_run_parameters_run_position" if-not-exists="true">
+          <column name="run_id" />
+          <column name="position" />
+        </index>
+      </indexes>
+    </table>
+  </tables>
+</database>

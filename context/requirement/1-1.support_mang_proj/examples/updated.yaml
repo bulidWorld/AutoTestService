@@ -1,0 +1,28 @@
+openapi: 3.0.3
+info:
+  title: 订单 API
+  version: 2.0.0
+paths:
+  /orders/{order_id}:
+    get:
+      summary: 更新后的订单查询
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: 查询成功
+  /orders/{order_id}/cancel:
+    post:
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: 已取消

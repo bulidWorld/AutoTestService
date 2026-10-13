@@ -1,0 +1,6 @@
+# 与 application.yaml 合并。生产部署请按实际数据库配置修改。
+service:
+  host: 0.0.0.0
+logging:
+  level: INFO
+  directory: /var/service/log/auto-test-service

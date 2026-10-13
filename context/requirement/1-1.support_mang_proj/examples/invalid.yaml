@@ -1,0 +1,14 @@
+openapi: 3.0.3
+info:
+  title: 不支持的外部引用
+  version: 1.0.0
+paths:
+  /orders:
+    get:
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: https://example.com/order.yaml

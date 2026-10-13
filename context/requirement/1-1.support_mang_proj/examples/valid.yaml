@@ -1,0 +1,64 @@
+openapi: 3.0.3
+info:
+  title: 订单 API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /orders/{order_id}:
+    get:
+      operationId: getOrder
+      summary: 查询订单
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            example: 10
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+  /orders:
+    post:
+      operationId: createOrder
+      summary: 创建订单
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Order'
+      responses:
+        '201':
+          description: 已创建
+components:
+  schemas:
+    Order:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: 示例订单
+        customer:
+          type: object
+          properties:
+            id:
+              type: integer
+            token:
+              type: string
+              default: PRIVATE_TOKEN
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              price:
+                type: number
+              enabled:
+                type: boolean

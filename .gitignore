@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+config/*.secret
+config/application-local.yaml
+logs/*
+!logs/.gitkeep
+run/*
+!run/.gitkeep

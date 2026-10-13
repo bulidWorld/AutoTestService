@@ -1,0 +1,2547 @@
+# Design-first: 先维护此契约，再绑定 Python Handler。
+openapi: 3.0.3
+info:
+  title: AutoTestService API
+  version: 0.4.0
+  description: 项目与接口资产管理、OpenAPI 3.0.x YAML 导入与版本浏览，以及输入参数进行接口单次测试。业务接口无需认证。任务编排与执行由
+    rest-task.yaml 定义。
+paths:
+  /api/v1/health:
+    get:
+      summary: 进程健康检查
+      description: 进程健康检查，初始化阶段无需认证。
+      operationId: health
+      responses:
+        '200':
+          description: 服务正常
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '400':
+          description: 无效请求
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      tags:
+      - 系统
+  /api/v1/ready:
+    get:
+      summary: 数据库就绪检查
+      description: 数据库就绪检查，初始化阶段无需认证。
+      operationId: ready
+      responses:
+        '200':
+          description: 服务正常
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '400':
+          description: 无效请求
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: 数据库不可用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+      tags:
+      - 系统
+  /api/v1/projects:
+    get:
+      operationId: listProjects
+      tags:
+      - 项目
+      summary: 查询项目列表
+      description: 按名称不区分大小写包含搜索，未筛选时返回全部；按更新时间降序、ID 升序稳定分页。 当前阶段无需认证。
+      parameters:
+      - name: name
+        in: query
+        required: false
+        description: 项目名称包含搜索，空字符串表示不筛选。
+        schema:
+          type: string
+          description: 名称搜索词。
+          example: 订单系统
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectPage'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: createProject
+      tags:
+      - 项目
+      summary: 新建项目
+      description: 名称系统内唯一；持久化成功后返回项目摘要。 当前阶段无需认证。
+      parameters: []
+      responses:
+        '201':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 名称冲突或删除受到运行/引用约束。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        description: 项目名称及可选描述。
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectCreate'
+  /api/v1/projects/{project_id}:
+    get:
+      operationId: getProject
+      tags:
+      - 项目
+      summary: 查询项目详情
+      description: 返回项目及所属 YAML 文件摘要，统计当前版本接口。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectDetail'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    patch:
+      operationId: updateProject
+      tags:
+      - 项目
+      summary: 编辑项目
+      description: 仅更新提交字段；名称冲突时完整回滚，不改变描述或更新时间。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 名称冲突或删除受到运行/引用约束。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        description: 项目部分更新字段。
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectUpdate'
+    delete:
+      operationId: deleteProject
+      tags:
+      - 项目
+      summary: 确认删除项目
+      description: 必须 confirm=true；事务内重新校验，删除项目及所有关联文件、历史版本、接口。后续任务/运行数据纳入关联删除，运行中项目拒绝删除。
+        当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/ConfirmDelete'
+      responses:
+        '200':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletionResult'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 名称冲突或删除受到运行/引用约束。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/projects/{project_id}/deletion-preview:
+    get:
+      operationId: previewProjectDeletion
+      tags:
+      - 项目
+      summary: 查询项目删除影响
+      description: 统计将删除的文件、全部版本、接口及后续任务记录；存在运行中任务时禁止删除。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletionPreview'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/projects/{project_id}/yaml-files:
+    get:
+      operationId: listYamlFiles
+      tags:
+      - YAML 文件
+      summary: 查询项目 YAML 文件
+      description: 展示当前版本及接口数；按更新时间降序、ID 升序稳定分页。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/YamlFilePage'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: importYamlFile
+      tags:
+      - YAML 文件
+      summary: 导入 YAML 文件
+      description: 逻辑名项目内唯一；原始内容、版本 1 和全部接口一次性保存。支持文件内 components 引用和嵌套基础 Schema；失败不创建部分数据。
+        当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '201':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportResult'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 名称冲突或删除受到运行/引用约束。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          description: 上传文件超过 5 MiB，未保存任何导入数据。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        description: multipart/form-data 上传；先完整解析校验，再原子写入。不能把文件路径作为 JSON 字符串提交。
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              description: 上传字段。
+              example:
+                file: orders.yaml
+                name: 订单接口
+              properties:
+                name:
+                  type: string
+                  description: 逻辑文件名；首尾空白去除后不能为空，项目内区分大小写唯一。
+                  example: 订单接口
+                  minLength: 1
+                  maxLength: 120
+                file:
+                  type: string
+                  description: UTF-8 的 .yaml/.yml 文件，OpenAPI 3.0.x，上限 5 MiB。拒绝空文件、无接口、外部引用、组合
+                    Schema、cookie 参数及 JSON/multipart 以外的请求体。文件大小按实际字节计。
+                  example: orders.yaml
+                  format: binary
+              required:
+              - name
+              - file
+              additionalProperties: false
+  /api/v1/projects/{project_id}/yaml-files/{file_id}:
+    get:
+      operationId: getYamlFile
+      tags:
+      - YAML 文件
+      summary: 查询逻辑文件详情
+      description: 返回稳定文件 ID、当前版本与接口数；跨项目访问返回 404。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/FileId'
+      responses:
+        '200':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/YamlFile'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      operationId: deleteYamlFile
+      tags:
+      - YAML 文件
+      summary: 确认删除 YAML 文件
+      description: 必须 confirm=true，删除文件、全部版本及接口；被任务引用时返回 409。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/FileId'
+      - $ref: '#/components/parameters/ConfirmDelete'
+      responses:
+        '200':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletionResult'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 名称冲突或删除受到运行/引用约束。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/projects/{project_id}/yaml-files/{file_id}/deletion-preview:
+    get:
+      operationId: previewYamlFileDeletion
+      tags:
+      - YAML 文件
+      summary: 查询文件删除影响
+      description: 统计全部版本及接口；后续阶段任意版本被任务引用时禁止删除并在 blocking_reasons 展示引用任务。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/FileId'
+      responses:
+        '200':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletionPreview'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/projects/{project_id}/yaml-files/{file_id}/versions:
+    get:
+      operationId: listYamlVersions
+      tags:
+      - YAML 版本
+      summary: 查询历史版本
+      description: 按版本号降序分页；历史版本不可修改，不提供回滚、差异对比或单独删除。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/FileId'
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/YamlVersionPage'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: updateYamlFile
+      tags:
+      - YAML 版本
+      summary: 全量更新 YAML 并创建版本
+      description: 上传成功后版本号递增并切换当前版本；接口集合完全来自新文件，历史版本不变。失败不改变当前版本、接口或更新时间；已有任务继续绑定原版本。并发成功更新获得不同递增版本号。
+        当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/FileId'
+      responses:
+        '201':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportResult'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          description: 上传文件超过 5 MiB，未保存任何导入数据。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        description: multipart/form-data 上传；先完整解析校验，再原子写入。不能把文件路径作为 JSON 字符串提交。
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              description: 上传字段。
+              example:
+                file: orders.yaml
+              properties:
+                file:
+                  type: string
+                  description: UTF-8 的 .yaml/.yml 文件，OpenAPI 3.0.x，上限 5 MiB。拒绝空文件、无接口、外部引用、组合
+                    Schema、cookie 参数及 JSON/multipart 以外的请求体。文件大小按实际字节计。
+                  example: orders.yaml
+                  format: binary
+              required:
+              - file
+              additionalProperties: false
+  /api/v1/projects/{project_id}/yaml-files/{file_id}/versions/{version_number}:
+    get:
+      operationId: getYamlVersion
+      tags:
+      - YAML 版本
+      summary: 查询版本元信息
+      description: 指定版本的导入时间、文件名、接口数量及 OpenAPI 信息。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/FileId'
+      - $ref: '#/components/parameters/VersionNumber'
+      responses:
+        '200':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/YamlVersion'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/projects/{project_id}/yaml-files/{file_id}/versions/{version_number}/content:
+    get:
+      operationId: getYamlVersionContent
+      tags:
+      - YAML 版本
+      summary: 查看脱敏 YAML 内容
+      description: 仅返回指定版本的脱敏文本，密码、Token、认证头、敏感默认值和示例不能通过原始内容查看绕过脱敏。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/FileId'
+      - $ref: '#/components/parameters/VersionNumber'
+      responses:
+        '200':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionContent'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/projects/{project_id}/yaml-files/{file_id}/interfaces:
+    get:
+      operationId: listInterfaces
+      tags:
+      - 接口
+      summary: 查询文件接口列表
+      description: 未提供 version 时使用当前版本；指定 version 可查看历史接口。按路径、方法稳定排序，支持方法精确筛选和路径包含筛选。
+        当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/FileId'
+      - name: version
+        in: query
+        required: false
+        description: 历史版本号；省略时使用当前版本。
+        schema:
+          type: integer
+          description: 版本号。
+          example: 1
+          minimum: 1
+      - name: method
+        in: query
+        required: false
+        description: HTTP 方法精确筛选。
+        schema:
+          type: string
+          description: HTTP 方法。
+          example: GET
+          enum:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - HEAD
+          - OPTIONS
+          - TRACE
+      - name: path
+        in: query
+        required: false
+        description: 接口路径包含筛选；空字符串表示不筛选。
+        schema:
+          type: string
+          description: 路径搜索词。
+          example: /orders
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InterfacePage'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/projects/{project_id}/yaml-files/{file_id}/interfaces/{interface_id}:
+    get:
+      operationId: getInterface
+      tags:
+      - 接口
+      summary: 查询接口详情
+      description: 接口 ID 精确绑定其版本，可直接浏览历史接口；必须属于路径中的文件和项目。展示参数、JSON 或 multipart/form-data
+        请求体、响应及仅用于查看的认证与 servers。敏感内容统一脱敏。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/FileId'
+      - $ref: '#/components/parameters/InterfaceId'
+      responses:
+        '200':
+          description: 操作成功。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InterfaceDetail'
+        '400':
+          description: 请求参数或删除确认无效。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误；事务回滚，既有数据保留。
+          headers:
+            X-Request-ID:
+              description: 本次请求的关联 ID，用于查找脱敏日志。
+              schema:
+                type: string
+                description: 请求关联 ID。
+                example: a6c2d4e8f0914b1aa2957c6e4b36e003
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/projects/{project_id}/yaml-files/{file_id}/interfaces/{interface_id}/test:
+    post:
+      operationId: testInterface
+      tags:
+      - 接口
+      summary: 接口单次测试
+      description: 选择指定版本接口，输入参数后进行单次测试。方法和路径不能从请求覆盖；校验完成后只发送一次。HTTP 2xx 为成功，其他状态、超时或连接错误为失败；敏感参数、认证头及响应回显脱敏。当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/FileId'
+      - $ref: '#/components/parameters/InterfaceId'
+      requestBody:
+        required: true
+        description: 对选定的不可变接口版本执行一次；方法和路径从接口资产读取。地址允许路径前缀，不允许 query、fragment 或用户凭据；不创建任务或任务运行。支持
+          path/query/header 和 JSON 请求体；multipart 执行明确拒绝。
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InterfaceTestInput'
+      responses:
+        '200':
+          description: 单次测试完成，status 表示目标请求是否成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InterfaceTestResult'
+        '400':
+          description: 参数、地址、类型或执行媒体类型无效，issues 定位字段；不发送请求。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 接口不存在或不属于路径指定的项目及文件。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  schemas:
+    Health:
+      type: object
+      description: 服务可用状态
+      required:
+      - status
+      properties:
+        status:
+          type: string
+          description: ok 或 unavailable
+          example: ok
+      example:
+        status: ok
+    Error:
+      type: object
+      description: 统一错误响应；不暴露内部堆栈、密码或 Token。业务接口使用 code 和 issues 提供定位信息，系统基础接口至少返回
+        detail。
+      required:
+      - detail
+      properties:
+        detail:
+          type: string
+          description: 错误说明
+          example: 内部服务错误
+        code:
+          type: string
+          description: 稳定错误码，例如 PROJECT_NAME_CONFLICT、INVALID_YAML、UNSUPPORTED_SCHEMA、RESOURCE_NOT_FOUND。
+          example: INVALID_YAML
+        issues:
+          type: array
+          description: 字段级错误明细，没有字段错误时为空。
+          example:
+          - location: /paths/~1orders/post/requestBody
+            reason: 暂不支持 text/plain 请求体
+          items:
+            $ref: '#/components/schemas/ValidationIssue'
+      example:
+        detail: YAML 校验失败
+        code: UNSUPPORTED_SCHEMA
+        issues:
+        - location: /paths/~1orders/post/requestBody
+          reason: 暂不支持 text/plain 请求体
+    ProjectCreate:
+      type: object
+      description: 创建项目请求。
+      example:
+        name: 订单接口测试
+        description: 订单接口自动化测试项目
+      properties:
+        name:
+          type: string
+          description: 项目名称；去除首尾空白后不能为空、最多 120 字符；系统内区分大小写唯一。
+          example: 订单接口测试
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          description: 项目描述，最多 2000 字符；创建时未提供默认为空字符串。
+          example: 订单接口自动化测试项目
+          maxLength: 2000
+          default: ''
+      required:
+      - name
+      additionalProperties: false
+    ProjectUpdate:
+      type: object
+      description: 部分更新项目；至少提交一个字段，未提供的字段保持原值。
+      example:
+        name: 订单接口回归测试
+      properties:
+        name:
+          type: string
+          description: 项目名称；去除首尾空白后不能为空、最多 120 字符；系统内区分大小写唯一。
+          example: 订单接口测试
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          description: 项目描述，最多 2000 字符；创建时未提供默认为空字符串。
+          example: 订单接口自动化测试项目
+          maxLength: 2000
+          default: ''
+      additionalProperties: false
+      minProperties: 1
+    Project:
+      type: object
+      description: 项目摘要；接口数量只统计各文件当前版本，不累计历史版本。
+      example:
+        id: 1
+        name: 订单接口测试
+        description: 订单接口自动化测试项目
+        created_at: '2026-10-13T07:00:00Z'
+        updated_at: '2026-10-13T07:00:00Z'
+        yaml_file_count: 1
+        interface_count: 2
+      properties:
+        id:
+          type: integer
+          description: 项目唯一 ID。 数据库自增整数。
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        name:
+          type: string
+          description: 项目名称；去除首尾空白后不能为空、最多 120 字符；系统内区分大小写唯一。
+          example: 订单接口测试
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          description: 项目描述，最多 2000 字符；创建时未提供默认为空字符串。
+          example: 订单接口自动化测试项目
+          maxLength: 2000
+          default: ''
+        created_at:
+          type: string
+          description: 创建时间，RFC 3339 UTC 时间。
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+        updated_at:
+          type: string
+          description: 项目属性最后更新时间，RFC 3339 UTC 时间。
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+        yaml_file_count:
+          type: integer
+          description: 项目所属逻辑 YAML 文件数量。
+          example: 1
+          minimum: 0
+        interface_count:
+          type: integer
+          description: 所有文件当前版本的接口总数。
+          example: 2
+          minimum: 0
+      required:
+      - id
+      - name
+      - description
+      - created_at
+      - updated_at
+      - yaml_file_count
+      - interface_count
+    YamlFile:
+      type: object
+      description: 稳定的逻辑文件记录；更新 YAML 后文件 ID 保持不变，切换当前版本。
+      example:
+        id: 1
+        project_id: 1
+        name: 订单接口
+        current_version: 1
+        interface_count: 2
+        created_at: '2026-10-13T07:00:00Z'
+        updated_at: '2026-10-13T07:00:00Z'
+      properties:
+        id:
+          type: integer
+          description: 逻辑 YAML 文件 ID。 数据库自增整数。
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        project_id:
+          type: integer
+          description: 所属项目 ID。 数据库自增整数。
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        name:
+          type: string
+          description: 逻辑文件名；首尾空白去除后不能为空，项目内区分大小写唯一。
+          example: 订单接口
+          minLength: 1
+          maxLength: 120
+        current_version:
+          type: integer
+          description: 当前版本号，从 1 开始递增。
+          example: 1
+          minimum: 1
+        interface_count:
+          type: integer
+          description: 当前版本接口数量。
+          example: 2
+          minimum: 1
+        created_at:
+          type: string
+          description: 首次导入时间。
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+        updated_at:
+          type: string
+          description: 最近成功更新的时间；失败更新不改变此值。
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+      required:
+      - id
+      - project_id
+      - name
+      - current_version
+      - interface_count
+      - created_at
+      - updated_at
+    ProjectDetail:
+      type: object
+      description: 项目详情及所属逻辑文件；无文件时 yaml_files 为 []。
+      example:
+        id: 1
+        name: 订单接口测试
+        description: 订单接口自动化测试项目
+        created_at: '2026-10-13T07:00:00Z'
+        updated_at: '2026-10-13T07:00:00Z'
+        yaml_file_count: 1
+        interface_count: 2
+        yaml_files:
+        - id: 1
+          project_id: 1
+          name: 订单接口
+          current_version: 1
+          interface_count: 2
+          created_at: '2026-10-13T07:00:00Z'
+          updated_at: '2026-10-13T07:00:00Z'
+      properties:
+        id:
+          type: integer
+          description: 项目唯一 ID。 数据库自增整数。
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        name:
+          type: string
+          description: 项目名称；去除首尾空白后不能为空、最多 120 字符；系统内区分大小写唯一。
+          example: 订单接口测试
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          description: 项目描述，最多 2000 字符；创建时未提供默认为空字符串。
+          example: 订单接口自动化测试项目
+          maxLength: 2000
+          default: ''
+        created_at:
+          type: string
+          description: 创建时间，RFC 3339 UTC 时间。
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+        updated_at:
+          type: string
+          description: 项目属性最后更新时间，RFC 3339 UTC 时间。
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+        yaml_file_count:
+          type: integer
+          description: 项目所属逻辑 YAML 文件数量。
+          example: 1
+          minimum: 0
+        interface_count:
+          type: integer
+          description: 所有文件当前版本的接口总数。
+          example: 2
+          minimum: 0
+        yaml_files:
+          type: array
+          description: 所属文件摘要，按更新时间降序排列。
+          example:
+          - id: 1
+            project_id: 1
+            name: 订单接口
+            current_version: 1
+            interface_count: 2
+            created_at: '2026-10-13T07:00:00Z'
+            updated_at: '2026-10-13T07:00:00Z'
+          items:
+            $ref: '#/components/schemas/YamlFile'
+      required:
+      - id
+      - name
+      - description
+      - created_at
+      - updated_at
+      - yaml_file_count
+      - interface_count
+      - yaml_files
+    YamlVersion:
+      type: object
+      description: 成功导入后不可修改的版本摘要。
+      example:
+        file_id: 1
+        version: 1
+        filename: orders.yaml
+        imported_at: '2026-10-13T07:00:00Z'
+        interface_count: 2
+        openapi_version: 3.0.3
+        title: 订单 API
+        api_version: 1.0.0
+        is_current: true
+      properties:
+        file_id:
+          type: integer
+          description: 所属逻辑文件 ID。 数据库自增整数。
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        version:
+          type: integer
+          description: 文件内的版本号。
+          example: 1
+          minimum: 1
+        filename:
+          type: string
+          description: 上传时的原始文件名，不包含本机目录路径。
+          example: orders.yaml
+        imported_at:
+          type: string
+          description: 该版本成功导入时间。
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+        interface_count:
+          type: integer
+          description: 该版本接口数量。
+          example: 2
+          minimum: 1
+        openapi_version:
+          type: string
+          description: 导入文档声明的 OpenAPI 版本，仅接受 3.0.x。
+          example: 3.0.3
+        title:
+          type: string
+          description: 导入文档 info.title。
+          example: 订单 API
+        api_version:
+          type: string
+          description: 导入文档 info.version，区别于本系统文件版本号。
+          example: 1.0.0
+        is_current:
+          type: boolean
+          description: 该版本是否为当前版本。
+          example: true
+      required:
+      - file_id
+      - version
+      - filename
+      - imported_at
+      - interface_count
+      - openapi_version
+      - title
+      - api_version
+      - is_current
+    SchemaDocument:
+      type: object
+      description: 导入接口的原始 Schema 结构；保留类型、必填、默认值、示例及嵌套字段。仅支持基础类型及文件内引用，不支持组合 Schema。敏感默认值和示例经过脱敏。
+      example:
+        type: object
+        required:
+        - name
+        properties:
+          name:
+            type: string
+            description: 订单名称
+            example: 订单 A
+      additionalProperties: true
+    ParameterDefinition:
+      type: object
+      description: 接口参数定义，保留 path、query、header 参数及其 Schema。
+      example:
+        name: order_id
+        location: path
+        description: 订单 ID
+        required: true
+        schema:
+          type: integer
+          example: 10
+      properties:
+        name:
+          type: string
+          description: 参数名称。
+          example: order_id
+        location:
+          type: string
+          description: 参数所在位置。
+          example: path
+          enum:
+          - path
+          - query
+          - header
+        description:
+          type: string
+          description: 参数说明；源文档没有说明时为空字符串。
+          example: 订单 ID
+        required:
+          type: boolean
+          description: 是否必填；path 参数始终必填。
+          example: true
+        schema:
+          $ref: '#/components/schemas/SchemaDocument'
+      required:
+      - name
+      - location
+      - description
+      - required
+      - schema
+    RequestBodyDefinition:
+      type: object
+      description: JSON 或 multipart/form-data 请求体结构；不发送 HTTP 请求，仅供浏览和后续任务编排。
+      example:
+        description: 订单创建请求
+        required: true
+        content_type: application/json
+        schema:
+          type: object
+          properties:
+            name:
+              type: string
+      properties:
+        description:
+          type: string
+          description: 请求体说明。
+          example: 订单创建请求
+        required:
+          type: boolean
+          description: 请求体是否必填。
+          example: true
+        content_type:
+          type: string
+          description: 支持的请求体媒体类型。
+          example: application/json
+          enum:
+          - application/json
+          - multipart/form-data
+        encoding:
+          type: object
+          description: 源 multipart 字段编码定义，保留 contentType、headers、style、explode 等信息。
+          additionalProperties: true
+        schema:
+          $ref: '#/components/schemas/SchemaDocument'
+      required:
+      - description
+      - required
+      - content_type
+      - schema
+    ResponseDefinitions:
+      type: object
+      description: 源接口的 responses 映射，键为状态码或 default；保留响应说明、响应头和内容结构，敏感示例脱敏。
+      example:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+      additionalProperties: true
+    AuthenticationDefinitions:
+      type: object
+      description: 源文档 securitySchemes 及当前操作的有效 security 定义，仅展示，不自动生成认证头；凭据及敏感示例脱敏。
+      example:
+        schemes:
+          bearerAuth:
+            type: http
+            scheme: bearer
+        requirements:
+        - bearerAuth: []
+      additionalProperties: true
+    Interface:
+      type: object
+      description: 接口摘要；同一版本内以方法加路径唯一标识，ID 不跨版本复用。
+      example:
+        id: 1
+        file_id: 1
+        version: 1
+        method: GET
+        path: /orders/{order_id}
+        operation_id: getOrder
+        summary: 查询订单
+        description: 按 ID 查询订单
+      properties:
+        id:
+          type: integer
+          description: 版本内接口记录 ID。 数据库自增整数。
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        file_id:
+          type: integer
+          description: 所属逻辑文件 ID。 数据库自增整数。
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        version:
+          type: integer
+          description: 所属 YAML 版本号。
+          example: 1
+          minimum: 1
+        method:
+          type: string
+          description: HTTP 方法。
+          example: GET
+          enum:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - HEAD
+          - OPTIONS
+          - TRACE
+        path:
+          type: string
+          description: 源接口路径。
+          example: /orders/{order_id}
+        operation_id:
+          type: string
+          description: 源 operationId；未提供时为空字符串。
+          example: getOrder
+        summary:
+          type: string
+          description: 源接口摘要；未提供时为空字符串。
+          example: 查询订单
+        description:
+          type: string
+          description: 源接口详细说明；未提供时为空字符串。
+          example: 按 ID 查询订单
+      required:
+      - id
+      - file_id
+      - version
+      - method
+      - path
+      - operation_id
+      - summary
+      - description
+    InterfaceDetail:
+      type: object
+      description: 接口详情，包含合并后的路径级及操作级参数。当前阶段只提供定义浏览。没有请求体时省略 request_body。
+      example:
+        id: 1
+        file_id: 1
+        version: 1
+        method: GET
+        path: /orders/{order_id}
+        operation_id: getOrder
+        summary: 查询订单
+        description: 按 ID 查询订单
+        parameters:
+        - name: order_id
+          location: path
+          description: 订单 ID
+          required: true
+          schema:
+            type: integer
+            example: 10
+        responses:
+          '200':
+            description: 成功
+            content:
+              application/json:
+                schema:
+                  type: object
+        authentication:
+          schemes: {}
+          requirements: []
+        servers: []
+      properties:
+        id:
+          type: integer
+          description: 版本内接口记录 ID。 数据库自增整数。
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        file_id:
+          type: integer
+          description: 所属逻辑文件 ID。 数据库自增整数。
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        version:
+          type: integer
+          description: 所属 YAML 版本号。
+          example: 1
+          minimum: 1
+        method:
+          type: string
+          description: HTTP 方法。
+          example: GET
+          enum:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - HEAD
+          - OPTIONS
+          - TRACE
+        path:
+          type: string
+          description: 源接口路径。
+          example: /orders/{order_id}
+        operation_id:
+          type: string
+          description: 源 operationId；未提供时为空字符串。
+          example: getOrder
+        summary:
+          type: string
+          description: 源接口摘要；未提供时为空字符串。
+          example: 查询订单
+        description:
+          type: string
+          description: 源接口详细说明；未提供时为空字符串。
+          example: 按 ID 查询订单
+        parameters:
+          type: array
+          description: 路径级与操作级参数合并；同名同位置以操作级定义覆盖。
+          example:
+          - name: order_id
+            location: path
+            description: 订单 ID
+            required: true
+            schema:
+              type: integer
+              example: 10
+          items:
+            $ref: '#/components/schemas/ParameterDefinition'
+        request_body:
+          $ref: '#/components/schemas/RequestBodyDefinition'
+        responses:
+          $ref: '#/components/schemas/ResponseDefinitions'
+        authentication:
+          $ref: '#/components/schemas/AuthenticationDefinitions'
+        servers:
+          type: array
+          description: 源接口有效 servers 定义，仅展示不用于自动请求。
+          example:
+          - url: https://api.example.com
+          items:
+            type: object
+            description: OpenAPI Server 原始定义。
+            example:
+              url: https://api.example.com
+            additionalProperties: true
+      required:
+      - id
+      - file_id
+      - version
+      - method
+      - path
+      - operation_id
+      - summary
+      - description
+      - parameters
+      - responses
+      - authentication
+      - servers
+    ProjectPage:
+      type: object
+      description: 分页查询结果；无匹配记录时 items 为 []、total 为 0，超出末页也返回空列表。
+      example:
+        items:
+        - id: 1
+          name: 订单接口测试
+          description: 订单接口自动化测试项目
+          created_at: '2026-10-13T07:00:00Z'
+          updated_at: '2026-10-13T07:00:00Z'
+          yaml_file_count: 1
+          interface_count: 2
+        total: 1
+        page: 1
+        page_size: 20
+      properties:
+        items:
+          type: array
+          description: 本页记录。
+          example:
+          - id: 1
+            name: 订单接口测试
+            description: 订单接口自动化测试项目
+            created_at: '2026-10-13T07:00:00Z'
+            updated_at: '2026-10-13T07:00:00Z'
+            yaml_file_count: 1
+            interface_count: 2
+          items:
+            $ref: '#/components/schemas/Project'
+        total:
+          type: integer
+          description: 筛选后的总记录数。
+          example: 1
+          minimum: 0
+        page:
+          type: integer
+          description: 当前页码。
+          example: 1
+          minimum: 1
+        page_size:
+          type: integer
+          description: 每页记录数。
+          example: 20
+          minimum: 1
+          maximum: 100
+      required:
+      - items
+      - total
+      - page
+      - page_size
+    YamlFilePage:
+      type: object
+      description: 分页查询结果；无匹配记录时 items 为 []、total 为 0，超出末页也返回空列表。
+      example:
+        items:
+        - id: 1
+          project_id: 1
+          name: 订单接口
+          current_version: 1
+          interface_count: 2
+          created_at: '2026-10-13T07:00:00Z'
+          updated_at: '2026-10-13T07:00:00Z'
+        total: 1
+        page: 1
+        page_size: 20
+      properties:
+        items:
+          type: array
+          description: 本页记录。
+          example:
+          - id: 1
+            project_id: 1
+            name: 订单接口
+            current_version: 1
+            interface_count: 2
+            created_at: '2026-10-13T07:00:00Z'
+            updated_at: '2026-10-13T07:00:00Z'
+          items:
+            $ref: '#/components/schemas/YamlFile'
+        total:
+          type: integer
+          description: 筛选后的总记录数。
+          example: 1
+          minimum: 0
+        page:
+          type: integer
+          description: 当前页码。
+          example: 1
+          minimum: 1
+        page_size:
+          type: integer
+          description: 每页记录数。
+          example: 20
+          minimum: 1
+          maximum: 100
+      required:
+      - items
+      - total
+      - page
+      - page_size
+    YamlVersionPage:
+      type: object
+      description: 分页查询结果；无匹配记录时 items 为 []、total 为 0，超出末页也返回空列表。
+      example:
+        items:
+        - file_id: 1
+          version: 1
+          filename: orders.yaml
+          imported_at: '2026-10-13T07:00:00Z'
+          interface_count: 2
+          openapi_version: 3.0.3
+          title: 订单 API
+          api_version: 1.0.0
+          is_current: true
+        total: 1
+        page: 1
+        page_size: 20
+      properties:
+        items:
+          type: array
+          description: 本页记录。
+          example:
+          - file_id: 1
+            version: 1
+            filename: orders.yaml
+            imported_at: '2026-10-13T07:00:00Z'
+            interface_count: 2
+            openapi_version: 3.0.3
+            title: 订单 API
+            api_version: 1.0.0
+            is_current: true
+          items:
+            $ref: '#/components/schemas/YamlVersion'
+        total:
+          type: integer
+          description: 筛选后的总记录数。
+          example: 1
+          minimum: 0
+        page:
+          type: integer
+          description: 当前页码。
+          example: 1
+          minimum: 1
+        page_size:
+          type: integer
+          description: 每页记录数。
+          example: 20
+          minimum: 1
+          maximum: 100
+      required:
+      - items
+      - total
+      - page
+      - page_size
+    InterfacePage:
+      type: object
+      description: 分页查询结果；无匹配记录时 items 为 []、total 为 0，超出末页也返回空列表。
+      example:
+        items:
+        - id: 1
+          file_id: 1
+          version: 1
+          method: GET
+          path: /orders/{order_id}
+          operation_id: getOrder
+          summary: 查询订单
+          description: 按 ID 查询订单
+        total: 1
+        page: 1
+        page_size: 20
+      properties:
+        items:
+          type: array
+          description: 本页记录。
+          example:
+          - id: 1
+            file_id: 1
+            version: 1
+            method: GET
+            path: /orders/{order_id}
+            operation_id: getOrder
+            summary: 查询订单
+            description: 按 ID 查询订单
+          items:
+            $ref: '#/components/schemas/Interface'
+        total:
+          type: integer
+          description: 筛选后的总记录数。
+          example: 1
+          minimum: 0
+        page:
+          type: integer
+          description: 当前页码。
+          example: 1
+          minimum: 1
+        page_size:
+          type: integer
+          description: 每页记录数。
+          example: 20
+          minimum: 1
+          maximum: 100
+      required:
+      - items
+      - total
+      - page
+      - page_size
+    ImportResult:
+      type: object
+      description: 一次成功的导入或更新结果；逻辑文件、版本及全部接口在同一事务中提交。
+      example:
+        file:
+          id: 1
+          project_id: 1
+          name: 订单接口
+          current_version: 1
+          interface_count: 2
+          created_at: '2026-10-13T07:00:00Z'
+          updated_at: '2026-10-13T07:00:00Z'
+        version:
+          file_id: 1
+          version: 1
+          filename: orders.yaml
+          imported_at: '2026-10-13T07:00:00Z'
+          interface_count: 2
+          openapi_version: 3.0.3
+          title: 订单 API
+          api_version: 1.0.0
+          is_current: true
+      properties:
+        file:
+          $ref: '#/components/schemas/YamlFile'
+        version:
+          $ref: '#/components/schemas/YamlVersion'
+      required:
+      - file
+      - version
+    VersionContent:
+      type: object
+      description: 经过敏感信息处理的原始 YAML 内容；不得绕过脱敏获取凭据。返回 JSON 字符串字段，前端用于代码视图。
+      example:
+        file_id: 1
+        version: 1
+        content: 'openapi: 3.0.3
+
+          '
+        redacted: false
+      properties:
+        file_id:
+          type: integer
+          description: 所属逻辑文件 ID。 数据库自增整数。
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        version:
+          type: integer
+          description: 版本号。
+          example: 1
+          minimum: 1
+        content:
+          type: string
+          description: 脱敏后的 YAML 文本；保留内容语义，不保证原始格式完全一致。
+          example: "openapi: 3.0.3\ninfo:\n  title: 订单 API\n  version: 1.0.0\n"
+        redacted:
+          type: boolean
+          description: 是否对敏感内容进行了替换。
+          example: false
+      required:
+      - file_id
+      - version
+      - content
+      - redacted
+    DeletionPreview:
+      type: object
+      description: 删除影响预览，供页面二次确认；计数仅作提示，删除时重新校验约束。
+      example:
+        target_id: 1
+        yaml_file_count: 1
+        version_count: 2
+        interface_count: 4
+        task_count: 0
+        run_count: 0
+        can_delete: true
+        blocking_reasons: []
+      properties:
+        target_id:
+          type: integer
+          description: 目标项目或文件 ID。 数据库自增整数。
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        yaml_file_count:
+          type: integer
+          description: 将删除的逻辑文件数量。
+          example: 1
+          minimum: 0
+        version_count:
+          type: integer
+          description: 将删除的全部历史版本数量。
+          example: 2
+          minimum: 0
+        interface_count:
+          type: integer
+          description: 将删除的全部版本接口数量，区别于项目摘要的当前版本数量。
+          example: 4
+          minimum: 0
+        task_count:
+          type: integer
+          description: 关联任务数量；阶段一没有任务时为 0。
+          example: 0
+          minimum: 0
+        run_count:
+          type: integer
+          description: 关联运行记录数量；阶段一没有运行时为 0。
+          example: 0
+          minimum: 0
+        can_delete:
+          type: boolean
+          description: 是否允许删除；项目运行中或文件被任务引用时为 false。
+          example: true
+        blocking_reasons:
+          type: array
+          description: 阻止删除的可读原因；可删除时为空。
+          example: []
+          items:
+            type: string
+            description: 一条删除限制。
+            example: 存在运行中的任务
+      required:
+      - target_id
+      - yaml_file_count
+      - version_count
+      - interface_count
+      - task_count
+      - run_count
+      - can_delete
+      - blocking_reasons
+    DeletionResult:
+      type: object
+      description: 删除成功结果，删除关联数据后不可再访问；重复删除不存在的对象返回 404。
+      example:
+        id: 1
+        deleted: true
+      properties:
+        id:
+          type: integer
+          description: 已删除对象 ID。 数据库自增整数。
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        deleted:
+          type: boolean
+          description: 删除完成。
+          example: true
+          enum:
+          - true
+      required:
+      - id
+      - deleted
+    ValidationIssue:
+      type: object
+      description: 单项校验错误，定位 YAML 字段、接口路径或请求参数。
+      example:
+        location: /paths/~1orders/post/requestBody
+        reason: 暂不支持 text/plain 请求体
+      properties:
+        location:
+          type: string
+          description: 出错位置；YAML 使用 JSON Pointer，请求使用 body.name 等字段路径。
+          example: /paths/~1orders/post/requestBody
+        reason:
+          type: string
+          description: 可读错误原因，不包含凭据或内部堆栈。
+          example: 暂不支持 text/plain 请求体
+      required:
+      - location
+      - reason
+    InterfaceTestParameter:
+      type: object
+      description: 单次测试参数，值直接按接口 Schema 校验，保持 JSON 类型；未填写的可选参数不发送。header 允许额外认证头，禁止覆盖方法、地址、Host
+        等执行配置。
+      properties:
+        location:
+          type: string
+          description: 参数位置
+          example: path
+          enum:
+          - path
+          - query
+          - header
+        name:
+          type: string
+          description: 参数名称
+          example: order_id
+          minLength: 1
+        value:
+          description: JSON 类型参数值：string/integer/number/boolean/object/array，必须符合接口
+            Schema；不支持 null。
+          example: 10
+        sensitive:
+          type: boolean
+          description: 是否隐藏该参数及响应回显；认证头默认隐藏
+          example: false
+          default: false
+      required:
+      - location
+      - name
+      - value
+      example:
+        location: path
+        name: order_id
+        value: 10
+        sensitive: false
+      additionalProperties: false
+    InterfaceTestInput:
+      type: object
+      description: 对选定的不可变接口版本执行一次；方法和路径从接口资产读取。地址允许路径前缀，不允许 query、fragment 或用户凭据；不创建任务或任务运行。支持
+        path/query/header 和 JSON 请求体；multipart 执行明确拒绝。
+      properties:
+        base_url:
+          type: string
+          description: HTTP/HTTPS 测试地址
+          example: https://api.example.com/service
+        timeout_seconds:
+          type: integer
+          description: 请求超时秒数
+          example: 30
+          minimum: 1
+          maximum: 300
+          default: 30
+        parameters:
+          type: array
+          description: 输入的参数及认证头；query 数组使用重复键，对象 query 拒绝。
+          items:
+            $ref: '#/components/schemas/InterfaceTestParameter'
+          example:
+          - location: path
+            name: order_id
+            value: 10
+        request_body:
+          description: 完整 JSON 请求体，保持对象及数组结构；没有请求体时省略此字段，不传 null。
+          example:
+            name: demo
+        body_sensitive:
+          type: boolean
+          description: 是否隐藏整个请求体及响应体
+          example: false
+          default: false
+      required:
+      - base_url
+      - parameters
+      example:
+        base_url: https://api.example.com/service
+        timeout_seconds: 30
+        parameters:
+        - location: path
+          name: order_id
+          value: 10
+      additionalProperties: false
+    TestHeader:
+      type: object
+      description: 请求或响应头，重复头保持多条记录；Authorization/Cookie/Set-Cookie 默认脱敏。
+      properties:
+        name:
+          type: string
+          description: 头名称
+          example: Authorization
+        value:
+          type: string
+          description: 脱敏后的值
+          example: '***'
+        redacted:
+          type: boolean
+          description: 是否隐藏头值
+          example: true
+      required:
+      - name
+      - value
+      - redacted
+      example:
+        name: Authorization
+        value: '***'
+        redacted: true
+      additionalProperties: false
+    InterfaceTestResult:
+      type: object
+      description: 单次测试详情。调用完成后 HTTP 200 返回执行结果，远端非 2xx、超时及连接错误通过 status/error_code
+        区分；不自动重试或跟随重定向。仅返回本次结果，不保存任务或运行历史。
+      properties:
+        project_id:
+          type: integer
+          description: 项目 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        file_id:
+          type: integer
+          description: 文件 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        interface_id:
+          type: integer
+          description: 不可变版本接口 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        version:
+          type: integer
+          description: 实际使用的 YAML 版本
+          example: 1
+          minimum: 1
+        status:
+          type: string
+          description: 本次测试结果
+          example: succeeded
+          enum:
+          - succeeded
+          - failed
+        method:
+          type: string
+          description: 从接口资产读取的 HTTP 方法
+          example: GET
+        actual_url:
+          type: string
+          description: 脱敏的实际编码 URL
+          example: https://api.example.com/service/orders/10
+        request_headers:
+          type: array
+          description: 脱敏请求头
+          items:
+            $ref: '#/components/schemas/TestHeader'
+          example: []
+        request_body:
+          type: string
+          description: 脱敏请求体文本，无请求体为 null
+          example: null
+          nullable: true
+        response_status:
+          type: integer
+          description: 目标 HTTP 状态码，无响应为 null
+          example: 200
+          nullable: true
+        response_headers:
+          type: array
+          description: 脱敏响应头，无响应为 null
+          items:
+            $ref: '#/components/schemas/TestHeader'
+          nullable: true
+          example: []
+        response_body:
+          type: string
+          description: 脱敏响应体，无响应为 null
+          example: '{"data":{"a":1}}'
+          nullable: true
+        response_body_encoding:
+          type: string
+          description: 响应体编码，无响应为 null
+          example: utf-8
+          nullable: true
+          enum:
+          - utf-8
+          - base64
+          - null
+        started_at:
+          type: string
+          description: 开始时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+        finished_at:
+          type: string
+          description: 结束时间
+          example: '2026-10-13T07:00:01Z'
+          format: date-time
+        duration_ms:
+          type: integer
+          description: 耗时毫秒
+          example: 1000
+          format: int64
+          minimum: 0
+        error_code:
+          type: string
+          description: HTTP_STATUS_ERROR/CONNECTION_ERROR/TIMEOUT，成功为 null
+          example: null
+          nullable: true
+        error_message:
+          type: string
+          description: 脱敏错误原因，成功为 null
+          example: null
+          nullable: true
+        redacted:
+          type: boolean
+          description: 是否有字段脱敏
+          example: false
+      required:
+      - project_id
+      - file_id
+      - interface_id
+      - version
+      - status
+      - method
+      - actual_url
+      - request_headers
+      - request_body
+      - response_status
+      - response_headers
+      - response_body
+      - response_body_encoding
+      - started_at
+      - finished_at
+      - duration_ms
+      - error_code
+      - error_message
+      - redacted
+      example:
+        project_id: 1
+        file_id: 1
+        interface_id: 1
+        version: 1
+        status: succeeded
+        method: GET
+        actual_url: https://api.example.com/service/orders/10
+        request_headers: []
+        request_body: null
+        response_status: 200
+        response_headers: []
+        response_body: '{"data":{"a":1}}'
+        response_body_encoding: utf-8
+        started_at: '2026-10-13T07:00:00Z'
+        finished_at: '2026-10-13T07:00:01Z'
+        duration_ms: 1000
+        error_code: null
+        error_message: null
+        redacted: false
+      additionalProperties: false
+  parameters:
+    ProjectId:
+      name: project_id
+      in: path
+      required: true
+      description: 项目唯一 ID；必须属于路径中的项目及文件，否则返回 404。
+      schema:
+        type: integer
+        description: 项目 ID。 数据库自增整数。
+        example: 1
+        format: int32
+        minimum: 1
+        maximum: 2147483647
+    FileId:
+      name: file_id
+      in: path
+      required: true
+      description: 逻辑文件唯一 ID；必须属于路径中的项目及文件，否则返回 404。
+      schema:
+        type: integer
+        description: 逻辑文件 ID。 数据库自增整数。
+        example: 1
+        format: int32
+        minimum: 1
+        maximum: 2147483647
+    InterfaceId:
+      name: interface_id
+      in: path
+      required: true
+      description: 接口唯一 ID；必须属于路径中的项目及文件，否则返回 404。
+      schema:
+        type: integer
+        description: 接口 ID。 数据库自增整数。
+        example: 1
+        format: int32
+        minimum: 1
+        maximum: 2147483647
+    VersionNumber:
+      name: version_number
+      in: path
+      required: true
+      description: 该逻辑文件的历史版本号，从 1 开始。
+      schema:
+        type: integer
+        description: 版本号。
+        example: 1
+        minimum: 1
+    Page:
+      name: page
+      in: query
+      required: false
+      description: 页码，从 1 开始。
+      schema:
+        type: integer
+        description: 页码。
+        example: 1
+        minimum: 1
+        default: 1
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      description: 每页条数，范围 1～100。
+      schema:
+        type: integer
+        description: 每页条数。
+        example: 20
+        minimum: 1
+        maximum: 100
+        default: 20
+    ConfirmDelete:
+      name: confirm
+      in: query
+      required: true
+      description: 页面展示影响范围并完成二次确认后显式传 true；缺失或 false 均不执行删除。
+      schema:
+        type: boolean
+        description: 删除确认标记。
+        example: true
+        enum:
+        - true
+tags:
+- name: 系统
+  description: 进程健康及数据库就绪检查
+- name: 项目
+  description: 项目创建、搜索、编辑、详情及关联删除
+- name: YAML 文件
+  description: 逻辑文件导入、列表、详情和删除
+- name: YAML 版本
+  description: 不可变历史版本及脱敏原始内容
+- name: 接口
+  description: 按版本浏览接口参数、请求体和响应定义

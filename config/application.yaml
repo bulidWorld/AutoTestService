@@ -1,0 +1,27 @@
+service:
+  name: auto-test-service
+  host: 127.0.0.1
+  port: 31010
+  startup_timeout: 20
+  stop_timeout: 30
+contract: docs/rest-project.yaml
+logging:
+  level: INFO
+  directory: /var/service/log/auto-test-service
+  max_bytes: 104857600
+  backup_count: 30
+database:
+  host: 127.0.0.1
+  port: 5432
+  name: auto_test_service
+  user: auto_test_service
+  password_file: config/database.secret
+  connect_timeout: 5
+  schema_directory: db
+  admin:
+    auth: peer
+    host: /var/run/postgresql
+    port: 5432
+    name: postgres
+    user: postgres
+    system_user: postgres

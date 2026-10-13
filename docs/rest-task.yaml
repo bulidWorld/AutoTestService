@@ -1,0 +1,2706 @@
+# Design-first: 阶段二契约，业务实现前先维护此文件。
+openapi: 3.0.3
+info:
+  title: AutoTestService Task API
+  version: 0.3.0
+  description: 阶段二任务编排与基础执行契约；依赖 rest-project.yaml 的项目及接口资产。字段取值、关联、唯一性及状态约束由业务校验。保存和运行前进行校验；仅支持全局
+    REST 参数响应提取，无步骤响应提取、实时推送、重试或并行步骤。敏感数据在页面、API 及日志脱敏。
+paths:
+  /api/v1/projects/{project_id}/tasks:
+    get:
+      operationId: listTasks
+      tags:
+      - 任务管理
+      summary: 任务列表
+      description: 按名称不区分大小写包含搜索，按 updated_at 降序、id 升序分页。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: name
+        in: query
+        description: 名称包含搜索，空字符串不筛选。
+        schema:
+          type: string
+          description: 搜索词
+          example: 订单
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPage'
+        '400':
+          description: 请求无效或配置校验失败，issues 定位具体字段；不发送测试请求。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 任务名冲突、活动运行冲突或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: createTask
+      tags:
+      - 任务管理
+      summary: 创建任务
+      description: 原子保存参数和有序步骤；草稿允许没有步骤。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '201':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          description: 请求无效或配置校验失败，issues 定位具体字段；不发送测试请求。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 任务名冲突、活动运行冲突或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        description: 完整保存任务配置，步骤与参数原子替换；草稿可无步骤。保存校验必填、类型、引用及本项目版本归属；步骤数组顺序用于排序，复制省略
+          id。接口默认值仅首次填入，可修改。
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskWrite'
+  /api/v1/projects/{project_id}/tasks/{task_id}:
+    get:
+      operationId: getTask
+      tags:
+      - 任务管理
+      summary: 任务详情
+      description: 返回参数、步骤、文件名、固定版本、方法及路径；发现新版本仅提示。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          description: 请求无效或配置校验失败，issues 定位具体字段；不发送测试请求。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 任务名冲突、活动运行冲突或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      operationId: updateTask
+      tags:
+      - 任务管理
+      summary: 保存任务及步骤排序
+      description: 完整替换参数和步骤；保留已有步骤 ID，新步骤分配 ID。同一接口可重复添加。显式重新选择版本后校验绑定。锁定任务行协调保存和启动；运行中允许编辑，历史快照不受影响。
+        当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          description: 请求无效或配置校验失败，issues 定位具体字段；不发送测试请求。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 任务名冲突、活动运行冲突或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        description: 完整保存任务配置，步骤与参数原子替换；草稿可无步骤。保存校验必填、类型、引用及本项目版本归属；步骤数组顺序用于排序，复制省略
+          id。接口默认值仅首次填入，可修改。
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskWrite'
+    delete:
+      operationId: deleteTask
+      tags:
+      - 任务管理
+      summary: 删除任务
+      description: confirm=true 代表页面二次确认。事务内锁定任务行检查 queued/running，依次清理请求、运行参数、运行步骤、运行、任务步骤、参数及任务。
+        当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+      - $ref: '#/components/parameters/ConfirmDelete'
+      responses:
+        '200':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletionResult'
+        '400':
+          description: 请求无效或配置校验失败，issues 定位具体字段；不发送测试请求。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 任务名冲突、活动运行冲突或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/projects/{project_id}/tasks/{task_id}/copy:
+    post:
+      operationId: copyTask
+      tags:
+      - 任务管理
+      summary: 复制任务
+      description: 复制到同一项目，新任务及全部步骤分配新 ID；同步重映射 REST 参数的 step_id。复制来源配置和版本绑定，不复制运行历史、预览值或运行结果。当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+      responses:
+        '201':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          description: 请求无效或配置校验失败，issues 定位具体字段；不发送测试请求。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 任务名冲突、活动运行冲突或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        description: 复制到同一项目；名称必填且唯一，参数和版本绑定复制，任务及步骤分配新 ID，不复制运行历史。
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CopyTask'
+  /api/v1/projects/{project_id}/tasks/{task_id}/deletion-preview:
+    get:
+      operationId: previewTaskDeletion
+      tags:
+      - 任务管理
+      summary: 删除影响预览
+      description: 显示关联运行及请求数量；有未结束运行时禁止删除。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletionPreview'
+        '400':
+          description: 请求无效或配置校验失败，issues 定位具体字段；不发送测试请求。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 任务名冲突、活动运行冲突或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/projects/{project_id}/tasks/{task_id}/validate:
+    post:
+      operationId: validateTask
+      tags:
+      - 任务管理
+      summary: 校验任务
+      description: 只做静态校验，不调用接口：校验必填、类型、版本归属及 REST step_id 归属，禁止不存在或移除的步骤、循环及源步骤首次执行前未就绪的参数依赖。错误返回
+        valid=false 与 issues。run 模式至少一个步骤。当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationResult'
+        '400':
+          description: 请求无效或配置校验失败，issues 定位具体字段；不发送测试请求。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 任务名冲突、活动运行冲突或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        description: 校验已保存配置；save 允许无步骤，run 至少一个步骤。
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateTask'
+  /api/v1/projects/{project_id}/tasks/{task_id}/runs:
+    post:
+      operationId: startTaskRun
+      tags:
+      - 任务运行
+      summary: 运行任务
+      description: 先静态校验配置、step_id 本任务归属、参数依赖及提取表达式；失败 400，不发请求。锁定任务行，queued/running
+        存在则 409；事务保存不可变配置快照、运行步骤及参数结果，返回 202。Pipeline 1 按参数顺序初始化：fixed 取固定值，REST 执行引用步骤并从响应提取；同一步骤在本次运行只请求一次，多个参数共享响应。源步骤首次执行前校验其所有绑定只能使用已初始化参数，禁止循环和后序依赖。所有初始化成功后，Pipeline
+        2 按步骤序号执行未被参数引用的步骤，初始化步骤不重复执行；全部步骤均为初始化步骤时允许直接成功。无并行、重试或自动重定向。每步发送前提交请求记录，发送后保存响应；HTTP
+        2xx 才成功。HTTP 错误、连接失败、超时、非 JSON、字段缺失、null 或提取类型错误导致运行失败，未执行参数及步骤跳过；提取失败同时将源运行步骤标记
+        failed。不同任务独立运行，关闭页面不终止执行。重启将未结束运行和正在执行的参数/步骤标记 EXECUTION_INTERRUPTED，未执行项跳过，不续跑。地址前缀正确拼接，path/query
+        编码，query 数组重复键，对象 query 拒绝，JSON 保留结构。当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+      responses:
+        '202':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        '400':
+          description: 请求无效或配置校验失败，issues 定位具体字段；不发送测试请求。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 任务名冲突、活动运行冲突或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      operationId: listTaskRuns
+      tags:
+      - 任务运行
+      summary: 运行历史
+      description: 按 created_at 降序、id 降序分页；任务或 YAML 更新不改变历史。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      - name: status
+        in: query
+        description: 可选状态筛选。
+        schema:
+          type: string
+          description: 运行状态
+          example: queued
+          enum:
+          - queued
+          - running
+          - succeeded
+          - failed
+      responses:
+        '200':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunPage'
+        '400':
+          description: 请求无效或配置校验失败，issues 定位具体字段；不发送测试请求。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 任务名冲突、活动运行冲突或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/projects/{project_id}/tasks/{task_id}/runs/{run_id}:
+    get:
+      operationId: getTaskRun
+      tags:
+      - 任务运行
+      summary: 运行详情
+      description: 返回脱敏的不可变快照和步骤状态，支持手动刷新。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+      - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunDetail'
+        '400':
+          description: 请求无效或配置校验失败，issues 定位具体字段；不发送测试请求。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 任务名冲突、活动运行冲突或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/projects/{project_id}/tasks/{task_id}/runs/{run_id}/requests:
+    get:
+      operationId: listRunRequests
+      tags:
+      - 任务运行
+      summary: 运行请求记录
+      description: 先按阶段(parameters、steps)，再按 position、id 升序分页；执行前已经持久化的请求可查询，尚无响应的字段为
+        null。跳过步骤无请求记录。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+      - $ref: '#/components/parameters/RunId'
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestPage'
+        '400':
+          description: 请求无效或配置校验失败，issues 定位具体字段；不发送测试请求。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 任务名冲突、活动运行冲突或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/projects/{project_id}/tasks/{task_id}/runs/{run_id}/requests/{request_id}:
+    get:
+      operationId: getRunRequest
+      tags:
+      - 任务运行
+      summary: 请求详情
+      description: 返回方法、实际 URL、请求与响应头体、状态码、时间、耗时及可区分的错误原因，全部经过脱敏。 当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+      - $ref: '#/components/parameters/RunId'
+      - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Request'
+        '400':
+          description: 请求无效或配置校验失败，issues 定位具体字段；不发送测试请求。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 任务名冲突、活动运行冲突或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/projects/{project_id}/tasks/{task_id}/parameters/preview:
+    post:
+      operationId: previewRestParameter
+      tags:
+      - 任务管理
+      summary: 预览 REST 全局参数
+      description: 显式预览发送真实 HTTP 请求。提交有序参数及步骤配置，步骤必须包含已保存稳定 ID，按参数初始化顺序执行所引用步骤至目标参数；同一步骤仅请求一次。仅执行初始化依赖步骤，不执行后续任务步骤，不创建任务运行或保存配置；后续运行仍重新获取。
+        步骤 ID 必须属于路径中的任务。当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+      responses:
+        '400':
+          description: 配置或表达式无效；不发送请求。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 任务名冲突、活动运行冲突或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '200':
+          description: 获取并提取成功，供界面自动填入预览值。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreviewParameterResult'
+        '422':
+          description: 源 REST 获取或提取失败；code 区分 HTTP_STATUS_ERROR/CONNECTION_ERROR/TIMEOUT/RESPONSE_NOT_JSON/EXTRACTION_NOT_FOUND/EXTRACTION_TYPE_ERROR，issues
+            定位参数。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        description: 显式预览发送真实 HTTP 请求。提交有序参数及步骤配置，步骤必须包含已保存稳定 ID，按参数初始化顺序执行所引用步骤至目标参数；同一步骤仅请求一次。仅执行初始化依赖步骤，不执行后续任务步骤，不创建任务运行或保存配置；后续运行仍重新获取。
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreviewParameterRequest'
+components:
+  schemas:
+    Error:
+      type: object
+      description: 统一错误响应；不暴露内部堆栈、密码或 Token。业务接口使用 code 和 issues 提供定位信息，系统基础接口至少返回
+        detail。
+      required:
+      - detail
+      properties:
+        detail:
+          type: string
+          description: 错误说明
+          example: 内部服务错误
+        code:
+          type: string
+          description: 稳定错误码，例如 PROJECT_NAME_CONFLICT、INVALID_YAML、UNSUPPORTED_SCHEMA、RESOURCE_NOT_FOUND。
+          example: INVALID_YAML
+        issues:
+          type: array
+          description: 字段级错误明细，没有字段错误时为空。
+          example:
+          - location: /paths/~1orders/post/requestBody
+            reason: 暂不支持 text/plain 请求体
+          items:
+            $ref: '#/components/schemas/ValidationIssue'
+      example:
+        detail: YAML 校验失败
+        code: UNSUPPORTED_SCHEMA
+        issues:
+        - location: /paths/~1orders/post/requestBody
+          reason: 暂不支持 text/plain 请求体
+    ValidationIssue:
+      type: object
+      description: 单项校验错误，定位 YAML 字段、接口路径或请求参数。
+      example:
+        location: /paths/~1orders/post/requestBody
+        reason: 暂不支持 text/plain 请求体
+      properties:
+        location:
+          type: string
+          description: 出错位置；YAML 使用 JSON Pointer，请求使用 body.name 等字段路径。
+          example: /paths/~1orders/post/requestBody
+        reason:
+          type: string
+          description: 可读错误原因，不包含凭据或内部堆栈。
+          example: 暂不支持 text/plain 请求体
+      required:
+      - location
+      - reason
+    Value:
+      description: 保留 JSON 类型的固定值；类型与 value_type 或接口 Schema 一致；不支持 null。敏感值在响应中使用
+        redacted 标记并省略 value。
+      example:
+        order_id: 10
+      anyOf:
+      - type: string
+        description: JSON string
+        example: demo
+      - type: integer
+        description: JSON integer
+        example: 10
+      - type: number
+        description: JSON number
+        example: 1.5
+      - type: boolean
+        description: JSON boolean
+        example: true
+      - type: object
+        description: JSON object
+        example:
+          order_id: 10
+      - type: array
+        description: JSON array
+        example:
+        - 1
+        - 2
+    GlobalParameterInput:
+      description: 全局参数支持固定或 REST 来源；数组顺序决定初始化顺序。
+      oneOf:
+      - $ref: '#/components/schemas/FixedParameterInput'
+      - $ref: '#/components/schemas/RestParameterInput'
+      example:
+        name: order_id
+        value_type: integer
+        source_type: rest
+        rest_source:
+          step_id: 1
+          extract_expression: data.a
+        sensitive: false
+    GlobalParameter:
+      type: object
+      description: 参数配置详情；fixed 返回非敏感 value，rest 返回配置及接口名称，不返回缓存预览值。敏感字面绑定脱敏规则与任务步骤相同。
+      properties:
+        name:
+          type: string
+          description: 参数名称
+          example: token
+          minLength: 1
+          maxLength: 120
+        value_type:
+          type: string
+          description: 固定值类型
+          example: string
+          enum:
+          - string
+          - integer
+          - number
+          - boolean
+          - object
+          - array
+        sensitive:
+          type: boolean
+          description: 页面和日志脱敏标记
+          example: true
+          default: false
+        source_type:
+          type: string
+          description: 取值来源
+          example: rest
+          enum:
+          - fixed
+          - rest
+        value:
+          $ref: '#/components/schemas/Value'
+        rest_source:
+          $ref: '#/components/schemas/RestParameterSourceView'
+        position:
+          type: integer
+          description: 初始化序号
+          example: 1
+          minimum: 1
+        redacted:
+          type: boolean
+          description: 敏感值是否隐藏
+          example: false
+        interface_name:
+          type: string
+          description: 所引用步骤的接口名称；取 summary，缺省使用方法和路径。
+          example: 获取订单 ID
+        file_name:
+          type: string
+          description: 逻辑文件名称
+          example: 订单接口
+        current_version:
+          type: integer
+          description: REST 源文件当前版本
+          example: 1
+          minimum: 1
+        has_new_version:
+          type: boolean
+          description: 是否有新版本，仅提示
+          example: false
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          description: 任务参数稳定 ID，供运行快照与结果关联；更新同名参数保留 ID。
+          example: 1
+      required:
+      - name
+      - value_type
+      - source_type
+      - sensitive
+      - position
+      - redacted
+      - id
+      example:
+        name: order_id
+        value_type: integer
+        source_type: rest
+        rest_source:
+          step_id: 1
+          extract_expression: data.a
+        sensitive: false
+        position: 1
+        redacted: false
+        interface_name: 获取订单 ID
+        file_name: 订单接口
+        current_version: 1
+        has_new_version: false
+        id: 1
+      additionalProperties: false
+    GlobalParameterEdit:
+      description: 全局参数支持固定或 REST 来源；数组顺序决定初始化顺序。
+      oneOf:
+      - $ref: '#/components/schemas/FixedParameterEdit'
+      - $ref: '#/components/schemas/RestParameterInput'
+      example:
+        name: order_id
+        value_type: integer
+        source_type: rest
+        rest_source:
+          step_id: 1
+          extract_expression: data.a
+        sensitive: false
+    LiteralBinding:
+      type: object
+      description: 字面值绑定，整体保留类型。
+      properties:
+        kind:
+          type: string
+          description: 绑定方式
+          example: literal
+          enum:
+          - literal
+        value:
+          description: 保留 JSON 类型的固定值；类型与 value_type 或接口 Schema 一致；不支持 null。敏感值在响应中使用
+            redacted 标记并省略 value。
+          example:
+            order_id: 10
+          allOf:
+          - $ref: '#/components/schemas/Value'
+      required:
+      - kind
+      - value
+      example:
+        kind: literal
+        value: 10
+      additionalProperties: false
+    GlobalBinding:
+      type: object
+      description: 整体引用一个全局参数；不支持字符串内模板。
+      properties:
+        kind:
+          type: string
+          description: 绑定方式
+          example: global
+          enum:
+          - global
+        parameter_name:
+          type: string
+          description: 全局参数名称
+          example: token
+      required:
+      - kind
+      - parameter_name
+      example:
+        kind: global
+        parameter_name: token
+      additionalProperties: false
+    Binding:
+      description: 字面值或整体全局参数引用。
+      oneOf:
+      - $ref: '#/components/schemas/LiteralBinding'
+      - $ref: '#/components/schemas/GlobalBinding'
+      example:
+        kind: global
+        parameter_name: token
+    FieldBinding:
+      type: object
+      description: 字段绑定；path/query/header 用参数名；body 用 JSON Pointer，根对象或数组用空字符串。禁止重复或祖先与子字段重叠绑定。
+      properties:
+        location:
+          type: string
+          description: 参数位置
+          example: header
+          enum:
+          - path
+          - query
+          - header
+          - body
+        name:
+          type: string
+          description: 字段名或 JSON Pointer
+          example: Authorization
+        binding:
+          description: 字面值或整体全局参数引用。
+          example:
+            kind: global
+            parameter_name: token
+          allOf:
+          - $ref: '#/components/schemas/Binding'
+      required:
+      - location
+      - name
+      - binding
+      example:
+        location: header
+        name: Authorization
+        binding:
+          kind: global
+          parameter_name: token
+      additionalProperties: false
+    StepInput:
+      type: object
+      description: 步骤配置；数组顺序决定执行顺序，id 存在时保留稳定 ID，新增或复制步骤省略 id。interface_id/file_id/version
+        必须指向本项目同一接口版本。 引用初始化步骤需先保存任务以获得稳定 ID，再配置 REST 参数。删除一个被参数引用的步骤必须在同次完整保存中移除或改绑所有引用，否则拒绝。
+      properties:
+        id:
+          type: integer
+          description: 已有步骤稳定 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        interface_id:
+          type: integer
+          description: 版本内接口 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        file_id:
+          type: integer
+          description: 逻辑 YAML 文件 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        version:
+          type: integer
+          description: 显式绑定版本
+          example: 1
+          minimum: 1
+        bindings:
+          type: array
+          description: 参数、认证 header 和 JSON 字段绑定；可选字段未配置则不发送。
+          items:
+            $ref: '#/components/schemas/FieldBindingEdit'
+          example: []
+      required:
+      - interface_id
+      - file_id
+      - version
+      - bindings
+      example:
+        interface_id: 1
+        file_id: 1
+        version: 1
+        bindings: []
+      additionalProperties: false
+    Step:
+      type: object
+      description: 步骤详情；新版本提示仅展示，不自动替换绑定。敏感字面值省略 value，编辑时同一稳定步骤同一字段省略 value 可保留原值。
+      properties:
+        id:
+          type: integer
+          description: 已有步骤稳定 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        interface_id:
+          type: integer
+          description: 版本内接口 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        file_id:
+          type: integer
+          description: 逻辑 YAML 文件 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        version:
+          type: integer
+          description: 显式绑定版本
+          example: 1
+          minimum: 1
+        bindings:
+          type: array
+          description: 脱敏后的字段绑定。
+          example: []
+          items:
+            $ref: '#/components/schemas/FieldBindingView'
+        position:
+          type: integer
+          description: 展示序号
+          example: 1
+          minimum: 1
+        file_name:
+          type: string
+          description: 逻辑文件名
+          example: 订单接口
+        current_version:
+          type: integer
+          description: 文件当前版本
+          example: 2
+          minimum: 1
+        has_new_version:
+          type: boolean
+          description: 是否有新版本
+          example: true
+        method:
+          type: string
+          description: 方法
+          example: GET
+        path:
+          type: string
+          description: 接口路径
+          example: /orders/{id}
+        execution_phase:
+          type: string
+          enum:
+          - parameters
+          - steps
+          description: 由全局参数引用关系推导：被引用步骤为 parameters，其他为 steps；客户端不写入。
+          example: steps
+      required:
+      - id
+      - interface_id
+      - file_id
+      - version
+      - bindings
+      - position
+      - file_name
+      - current_version
+      - has_new_version
+      - method
+      - path
+      - execution_phase
+      example:
+        id: 1
+        interface_id: 1
+        file_id: 1
+        version: 1
+        bindings: []
+        position: 1
+        file_name: 订单接口
+        current_version: 2
+        has_new_version: true
+        method: GET
+        path: /orders/{id}
+        execution_phase: steps
+    TaskWrite:
+      type: object
+      description: 原子保存完整任务配置，参数及步骤数组决定各自顺序。REST 来源仅保存本任务的稳定 step_id 和表达式，复用步骤的接口版本与绑定。新步骤先保存获得
+        ID，再配置 REST 引用；复制任务时重建全部步骤 ID 并映射参数引用。被引用步骤在参数阶段执行一次，不在后续步骤阶段重复执行。参数引用的初始化步骤只能使用该步骤首次执行前已初始化的全局参数，拒绝自身、后序依赖及循环；同一步骤可供多个参数提取同一次响应，不重新请求。绑定失败或提取失败导致运行失败；静态校验不发请求。删除被引用步骤必须同时解除或改绑引用。至少有一个步骤才允许运行；全为初始化步骤时
+        Pipeline 2 为空，初始化全部成功则运行成功。
+      properties:
+        name:
+          type: string
+          description: 项目内唯一名称，去除首尾空白
+          example: 订单流程
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          description: 任务描述
+          example: 订单回归
+          maxLength: 2000
+          default: ''
+        base_url:
+          type: string
+          description: HTTP/HTTPS 地址，可带路径前缀，禁止 query、fragment 和用户凭据
+          example: https://api.example.com/service
+        timeout_seconds:
+          type: integer
+          description: 每次请求超时秒数
+          example: 30
+          minimum: 1
+          maximum: 300
+          default: 30
+        global_parameters:
+          type: array
+          description: 有序全局参数配置，支持 fixed/rest；名称唯一，REST 只能引用前序参数。
+          items:
+            $ref: '#/components/schemas/GlobalParameterEdit'
+          example: []
+        steps:
+          type: array
+          description: 有序步骤，允许为空
+          items:
+            $ref: '#/components/schemas/StepInput'
+          example: []
+      required:
+      - name
+      - base_url
+      - global_parameters
+      - steps
+      example:
+        name: 订单流程
+        base_url: https://api.example.com/service
+        timeout_seconds: 30
+        global_parameters: []
+        steps: []
+      additionalProperties: false
+    Task:
+      type: object
+      description: 任务详情，返回参数到步骤的引用及推导的执行阶段；敏感值脱敏，已有值保留规则见 TaskWrite。
+      properties:
+        name:
+          type: string
+          description: 项目内唯一名称，去除首尾空白
+          example: 订单流程
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          description: 任务描述
+          example: 订单回归
+          maxLength: 2000
+          default: ''
+        base_url:
+          type: string
+          description: HTTP/HTTPS 地址，可带路径前缀，禁止 query、fragment 和用户凭据
+          example: https://api.example.com/service
+        timeout_seconds:
+          type: integer
+          description: 每次请求超时秒数
+          example: 30
+          minimum: 1
+          maximum: 300
+          default: 30
+        global_parameters:
+          type: array
+          description: 有序全局参数配置，支持 fixed/rest；名称唯一，REST 只能引用前序参数。
+          items:
+            $ref: '#/components/schemas/GlobalParameter'
+          example: []
+        steps:
+          type: array
+          description: 步骤及版本提示
+          items:
+            $ref: '#/components/schemas/Step'
+          example: []
+        id:
+          type: integer
+          description: 任务 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        project_id:
+          type: integer
+          description: 项目 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        created_at:
+          type: string
+          description: 创建时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          description: 更新时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+      required:
+      - name
+      - description
+      - base_url
+      - timeout_seconds
+      - global_parameters
+      - steps
+      - id
+      - project_id
+      - created_at
+      - updated_at
+      example:
+        id: 1
+        project_id: 1
+        name: 订单流程
+        description: 订单回归
+        base_url: https://api.example.com/service
+        timeout_seconds: 30
+        global_parameters: []
+        steps: []
+        created_at: '2026-10-13T07:00:00Z'
+        updated_at: '2026-10-13T07:00:00Z'
+    TaskSummary:
+      type: object
+      description: 任务列表摘要。
+      properties:
+        name:
+          type: string
+          description: 项目内唯一名称，去除首尾空白
+          example: 订单流程
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          description: 任务描述
+          example: 订单回归
+          maxLength: 2000
+          default: ''
+        base_url:
+          type: string
+          description: HTTP/HTTPS 地址，可带路径前缀，禁止 query、fragment 和用户凭据
+          example: https://api.example.com/service
+        timeout_seconds:
+          type: integer
+          description: 每次请求超时秒数
+          example: 30
+          minimum: 1
+          maximum: 300
+          default: 30
+        id:
+          type: integer
+          description: 任务 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        project_id:
+          type: integer
+          description: 项目 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        created_at:
+          type: string
+          description: 创建时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          description: 更新时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        step_count:
+          type: integer
+          description: 步骤数量
+          example: 3
+          minimum: 0
+        has_active_run:
+          type: boolean
+          description: 是否存在待运行或运行中记录
+          example: false
+      required:
+      - name
+      - description
+      - base_url
+      - timeout_seconds
+      - id
+      - project_id
+      - created_at
+      - updated_at
+      - step_count
+      - has_active_run
+      example:
+        name: 订单流程
+        description: 订单回归
+        base_url: https://api.example.com/service
+        timeout_seconds: 30
+        id: 1
+        project_id: 1
+        created_at: '2026-10-13T07:00:00Z'
+        updated_at: '2026-10-13T07:00:00Z'
+        step_count: 3
+        has_active_run: false
+    CopyTask:
+      type: object
+      description: 复制到同一项目；名称必填且唯一，参数和版本绑定复制，任务及步骤分配新 ID，不复制运行历史。
+      properties:
+        name:
+          type: string
+          description: 项目内唯一名称，去除首尾空白
+          example: 订单流程
+          minLength: 1
+          maxLength: 120
+      required:
+      - name
+      example:
+        name: 订单流程
+      additionalProperties: false
+    ValidationResult:
+      type: object
+      description: 配置校验结果；定位参数、步骤及字段，绝不发送测试 HTTP 请求。
+      properties:
+        valid:
+          type: boolean
+          description: 是否通过校验
+          example: false
+        issues:
+          type: array
+          description: 错误定位，不含敏感值
+          items:
+            $ref: '#/components/schemas/ValidationIssue'
+          example: []
+      required:
+      - valid
+      - issues
+      example:
+        valid: false
+        issues: []
+    ValidateTask:
+      type: object
+      description: 校验已保存配置；save 允许无步骤，run 至少一个步骤。
+      properties:
+        mode:
+          type: string
+          description: 校验目的
+          example: run
+          enum:
+          - save
+          - run
+          default: run
+      example:
+        mode: run
+      additionalProperties: false
+    Run:
+      type: object
+      description: 运行摘要。HTTP 2xx 成功；其他状态、连接失败、超时失败，后续步骤跳过。
+      properties:
+        id:
+          type: integer
+          description: 运行 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        task_id:
+          type: integer
+          description: 任务 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        project_id:
+          type: integer
+          description: 项目 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        status:
+          type: string
+          description: 运行状态
+          example: queued
+          enum:
+          - queued
+          - running
+          - succeeded
+          - failed
+        created_at:
+          type: string
+          description: 接受运行时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        started_at:
+          type: string
+          description: 开始时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          description: 结束时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        duration_ms:
+          type: integer
+          description: 耗时毫秒，未结束为 null
+          example: null
+          format: int64
+          nullable: true
+          minimum: 0
+        error_code:
+          type: string
+          description: 错误分类：HTTP_STATUS_ERROR、CONNECTION_ERROR、TIMEOUT、RESPONSE_NOT_JSON、EXTRACTION_NOT_FOUND、EXTRACTION_TYPE_ERROR、EXECUTION_INTERRUPTED。
+          example: null
+          nullable: true
+        error_message:
+          type: string
+          description: 脱敏错误说明
+          example: null
+          nullable: true
+      required:
+      - id
+      - task_id
+      - project_id
+      - status
+      - created_at
+      - started_at
+      - finished_at
+      - duration_ms
+      - error_code
+      - error_message
+      example:
+        id: 1
+        task_id: 1
+        project_id: 1
+        status: queued
+        created_at: '2026-10-13T07:00:00Z'
+        started_at: '2026-10-13T07:00:00Z'
+        finished_at: '2026-10-13T07:00:00Z'
+        duration_ms: null
+        error_code: null
+        error_message: null
+    RunStep:
+      type: object
+      description: 运行步骤结果；每步最多请求一次；跳过步骤没有请求记录。
+      properties:
+        id:
+          type: integer
+          description: 运行步骤 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        step_id:
+          type: integer
+          description: 快照中的任务步骤稳定 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        position:
+          type: integer
+          description: 执行序号
+          example: 1
+          minimum: 1
+        status:
+          type: string
+          description: 步骤状态
+          example: pending
+          enum:
+          - pending
+          - running
+          - succeeded
+          - failed
+          - skipped
+        request_id:
+          type: integer
+          description: 请求记录 ID，未发送或跳过为 null
+          example: null
+          format: int32
+          nullable: true
+          minimum: 1
+        started_at:
+          type: string
+          description: 开始时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          description: 结束时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        duration_ms:
+          type: integer
+          description: 耗时毫秒，未结束为 null
+          example: null
+          format: int64
+          nullable: true
+          minimum: 0
+        error_code:
+          type: string
+          description: 错误分类；服务重启遗留运行标记 EXECUTION_INTERRUPTED
+          example: null
+          nullable: true
+        error_message:
+          type: string
+          description: 脱敏错误说明
+          example: null
+          nullable: true
+      required:
+      - id
+      - step_id
+      - position
+      - status
+      - request_id
+      - started_at
+      - finished_at
+      - duration_ms
+      - error_code
+      - error_message
+      example:
+        id: 1
+        step_id: 1
+        position: 1
+        status: pending
+        request_id: null
+        started_at: '2026-10-13T07:00:00Z'
+        finished_at: '2026-10-13T07:00:00Z'
+        duration_ms: null
+        error_code: null
+        error_message: null
+    Snapshot:
+      type: object
+      description: 脱敏的不可变任务配置，包含参数到稳定步骤 ID 的引用映射和全部步骤接口定义。运行结果独立保存，不修改快照。
+      properties:
+        task:
+          description: 任务详情；敏感值不直接返回，已有敏感值编辑保留规则见 TaskWrite。
+          example:
+            name: 订单流程
+            description: 订单回归
+            base_url: https://api.example.com/service
+            timeout_seconds: 30
+            global_parameters: []
+            steps: []
+            id: 1
+            project_id: 1
+            created_at: '2026-10-13T07:00:00Z'
+            updated_at: '2026-10-13T07:00:00Z'
+          allOf:
+          - $ref: '#/components/schemas/Task'
+        interface_definitions:
+          type: array
+          description: 所有步骤接口定义，包括参数引用的初始化步骤，返回前脱敏。
+          items:
+            type: object
+            description: 完整接口定义
+            example:
+              interface_id: 1
+              file_id: 1
+              version: 1
+              method: GET
+              path: /orders/{id}
+            additionalProperties: true
+          example: []
+        redacted_paths:
+          type: array
+          description: 省略或替换的敏感字段 JSON Pointer
+          items:
+            type: string
+            description: 敏感位置
+            example: /task/global_parameters/0/value
+          example: []
+      required:
+      - task
+      - interface_definitions
+      - redacted_paths
+      example:
+        task:
+          id: 1
+          project_id: 1
+          name: 订单流程
+          description: 订单回归
+          base_url: https://api.example.com/service
+          timeout_seconds: 30
+          global_parameters: []
+          steps: []
+          created_at: '2026-10-13T07:00:00Z'
+          updated_at: '2026-10-13T07:00:00Z'
+        interface_definitions: []
+        redacted_paths: []
+    RunDetail:
+      type: object
+      description: 运行详情，通过手动刷新查询。
+      properties:
+        run:
+          description: 运行摘要。HTTP 2xx 成功；其他状态、连接失败、超时失败，后续步骤跳过。
+          example:
+            id: 1
+            task_id: 1
+            project_id: 1
+            status: queued
+            created_at: '2026-10-13T07:00:00Z'
+            started_at: '2026-10-13T07:00:00Z'
+            finished_at: '2026-10-13T07:00:00Z'
+            duration_ms: null
+            error_code: null
+            error_message: null
+          allOf:
+          - $ref: '#/components/schemas/Run'
+        config_snapshot:
+          description: 脱敏的不可变完整快照；数据库内部保留执行原值。接口定义随运行复制，不依赖当前 YAML；敏感字段省略并提供 redacted_paths。
+          example:
+            interface_definitions: []
+            redacted_paths: []
+          allOf:
+          - $ref: '#/components/schemas/Snapshot'
+        steps:
+          type: array
+          description: 按序排列的运行步骤结果
+          items:
+            $ref: '#/components/schemas/RunStep'
+          example: []
+        global_parameters:
+          type: array
+          description: 按初始化顺序排列的本次运行参数结果，独立于不可变配置快照。
+          items:
+            $ref: '#/components/schemas/RunParameter'
+          example: []
+      required:
+      - run
+      - config_snapshot
+      - steps
+      - global_parameters
+      example:
+        run:
+          id: 1
+          task_id: 1
+          project_id: 1
+          status: queued
+          created_at: '2026-10-13T07:00:00Z'
+          started_at: '2026-10-13T07:00:00Z'
+          finished_at: '2026-10-13T07:00:00Z'
+          duration_ms: null
+          error_code: null
+          error_message: null
+        config_snapshot:
+          task:
+            id: 1
+            project_id: 1
+            name: 订单流程
+            description: 订单回归
+            base_url: https://api.example.com/service
+            timeout_seconds: 30
+            global_parameters: []
+            steps: []
+            created_at: '2026-10-13T07:00:00Z'
+            updated_at: '2026-10-13T07:00:00Z'
+          interface_definitions: []
+          redacted_paths: []
+        steps: []
+        global_parameters: []
+    Header:
+      type: object
+      description: HTTP 头；数组允许重复名称。
+      properties:
+        name:
+          type: string
+          description: 头名称
+          example: Authorization
+        value:
+          type: string
+          description: 脱敏后的值
+          example: '***'
+        redacted:
+          type: boolean
+          description: 是否脱敏
+          example: true
+      required:
+      - name
+      - value
+      - redacted
+      example:
+        name: Authorization
+        value: '***'
+        redacted: true
+    Request:
+      type: object
+      description: 每个请求关联实际执行的步骤；parameters 阶段步骤可被多个全局参数引用，请求只执行一次，参数结果通过 request_id
+        关联同一响应。所有敏感参数、派生 URL/header/请求体/响应回显和错误需脱敏。Authorization/Cookie/Set-Cookie
+        默认脱敏。
+      properties:
+        id:
+          type: integer
+          description: 请求记录 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        run_id:
+          type: integer
+          description: 运行 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        run_step_id:
+          type: integer
+          description: 运行步骤 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        step_id:
+          type: integer
+          description: 任务稳定步骤 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        position:
+          type: integer
+          description: 所属阶段的序号，先按 phase(parameters 在前) 再按 position 排序。
+          example: 1
+          minimum: 1
+        method:
+          type: string
+          description: HTTP 方法
+          example: GET
+        actual_url:
+          type: string
+          description: 脱敏后的实际编码 URL
+          example: https://api.example.com/service/orders/1
+        request_headers:
+          type: array
+          description: 脱敏请求头
+          items:
+            $ref: '#/components/schemas/Header'
+          example: []
+        request_body:
+          type: string
+          description: 脱敏请求体文本，没有为 null
+          example: null
+          nullable: true
+        response_status:
+          type: integer
+          description: 响应状态码，无响应为 null
+          example: 200
+          nullable: true
+        response_headers:
+          type: array
+          description: 脱敏响应头，未收到响应为 null
+          items:
+            $ref: '#/components/schemas/Header'
+          example: []
+          nullable: true
+        response_body:
+          type: string
+          description: 脱敏响应体，无响应为 null
+          example: null
+          nullable: true
+        response_body_encoding:
+          type: string
+          description: 响应文本编码
+          example: null
+          nullable: true
+          enum:
+          - utf-8
+          - base64
+          - null
+        started_at:
+          type: string
+          description: 开始时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          description: 结束时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        duration_ms:
+          type: integer
+          description: 耗时毫秒，未结束为 null
+          example: null
+          format: int64
+          nullable: true
+          minimum: 0
+        error_code:
+          type: string
+          description: 错误分类；服务重启遗留运行标记 EXECUTION_INTERRUPTED
+          example: null
+          nullable: true
+        error_message:
+          type: string
+          description: 脱敏错误说明
+          example: null
+          nullable: true
+        redacted:
+          type: boolean
+          description: 本记录是否有字段脱敏
+          example: true
+        phase:
+          type: string
+          description: 请求所属阶段
+          example: parameters
+          enum:
+          - parameters
+          - steps
+        run_parameter_id:
+          type: integer
+          description: 兼容旧字段，新记录为 null；参数结果使用 request_id 关联请求。
+          example: null
+          format: int32
+          nullable: true
+          minimum: 1
+      required:
+      - id
+      - run_id
+      - run_step_id
+      - step_id
+      - position
+      - method
+      - actual_url
+      - request_headers
+      - request_body
+      - response_status
+      - response_headers
+      - response_body
+      - response_body_encoding
+      - started_at
+      - finished_at
+      - duration_ms
+      - error_code
+      - error_message
+      - redacted
+      - phase
+      - run_parameter_id
+      example:
+        id: 1
+        run_id: 1
+        run_step_id: 1
+        step_id: 1
+        position: 1
+        method: GET
+        actual_url: https://api.example.com/service/orders/1
+        request_headers: []
+        request_body: null
+        response_status: 200
+        response_headers: []
+        response_body: null
+        response_body_encoding: null
+        started_at: '2026-10-13T07:00:00Z'
+        finished_at: '2026-10-13T07:00:00Z'
+        duration_ms: null
+        error_code: null
+        error_message: null
+        redacted: true
+        phase: steps
+        run_parameter_id: null
+    TaskPage:
+      type: object
+      description: 稳定分页，超出末页返回空 items。
+      properties:
+        items:
+          type: array
+          description: 本页记录
+          items:
+            $ref: '#/components/schemas/TaskSummary'
+          example: []
+        total:
+          type: integer
+          description: 总数
+          example: 0
+          minimum: 0
+        page:
+          type: integer
+          description: 页码
+          example: 1
+          minimum: 1
+        page_size:
+          type: integer
+          description: 每页数量
+          example: 20
+          minimum: 1
+          maximum: 100
+      required:
+      - items
+      - total
+      - page
+      - page_size
+      example:
+        items: []
+        total: 0
+        page: 1
+        page_size: 20
+    RunPage:
+      type: object
+      description: 稳定分页，超出末页返回空 items。
+      properties:
+        items:
+          type: array
+          description: 本页记录
+          items:
+            $ref: '#/components/schemas/Run'
+          example: []
+        total:
+          type: integer
+          description: 总数
+          example: 0
+          minimum: 0
+        page:
+          type: integer
+          description: 页码
+          example: 1
+          minimum: 1
+        page_size:
+          type: integer
+          description: 每页数量
+          example: 20
+          minimum: 1
+          maximum: 100
+      required:
+      - items
+      - total
+      - page
+      - page_size
+      example:
+        items: []
+        total: 0
+        page: 1
+        page_size: 20
+    RequestPage:
+      type: object
+      description: 稳定分页，超出末页返回空 items。
+      properties:
+        items:
+          type: array
+          description: 本页记录
+          items:
+            $ref: '#/components/schemas/Request'
+          example: []
+        total:
+          type: integer
+          description: 总数
+          example: 0
+          minimum: 0
+        page:
+          type: integer
+          description: 页码
+          example: 1
+          minimum: 1
+        page_size:
+          type: integer
+          description: 每页数量
+          example: 20
+          minimum: 1
+          maximum: 100
+      required:
+      - items
+      - total
+      - page
+      - page_size
+      example:
+        items: []
+        total: 0
+        page: 1
+        page_size: 20
+    DeletionPreview:
+      type: object
+      description: 删除任务影响预览；计数仅作提示，删除时锁定任务行并重新检查活动运行。
+      properties:
+        task_id:
+          type: integer
+          description: 任务 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        step_count:
+          type: integer
+          description: 步骤数
+          example: 3
+          minimum: 0
+        run_count:
+          type: integer
+          description: 运行记录数
+          example: 2
+          minimum: 0
+        request_count:
+          type: integer
+          description: 包括参数初始化和任务步骤的请求记录数量。
+          example: 6
+          minimum: 0
+        can_delete:
+          type: boolean
+          description: 无 queued/running 才允许删除
+          example: true
+        blocking_reasons:
+          type: array
+          description: 阻止删除原因
+          items:
+            type: string
+            description: 原因
+            example: 存在未结束运行
+          example: []
+      required:
+      - task_id
+      - step_count
+      - run_count
+      - request_count
+      - can_delete
+      - blocking_reasons
+      example:
+        task_id: 1
+        step_count: 3
+        run_count: 2
+        request_count: 6
+        can_delete: true
+        blocking_reasons: []
+    DeletionResult:
+      type: object
+      description: 删除成功结果，删除关联数据后不可再访问；重复删除不存在的对象返回 404。
+      example:
+        id: 1
+        deleted: true
+      properties:
+        id:
+          type: integer
+          description: 已删除对象 ID。 数据库自增整数。
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        deleted:
+          type: boolean
+          description: 删除完成。
+          example: true
+          enum:
+          - true
+      required:
+      - id
+      - deleted
+    LiteralBindingEdit:
+      type: object
+      description: 新字面值必须有 value；编辑已有稳定步骤的相同字段可省略敏感 value 保留原值，绑定方式改变必须提供值。
+      properties:
+        kind:
+          type: string
+          description: 绑定方式
+          example: literal
+          enum:
+          - literal
+        value:
+          description: 保留 JSON 类型的固定值；类型与 value_type 或接口 Schema 一致；不支持 null。敏感值在响应中使用
+            redacted 标记并省略 value。
+          example:
+            order_id: 10
+          allOf:
+          - $ref: '#/components/schemas/Value'
+      required:
+      - kind
+      example:
+        kind: literal
+        value: 10
+      additionalProperties: false
+    BindingEdit:
+      description: 字面值或整体全局参数引用。
+      oneOf:
+      - $ref: '#/components/schemas/LiteralBindingEdit'
+      - $ref: '#/components/schemas/GlobalBinding'
+      example:
+        kind: global
+        parameter_name: token
+    FieldBindingEdit:
+      type: object
+      description: 字段绑定；path/query/header 用参数名；body 用 JSON Pointer，根对象或数组用空字符串。禁止重复或祖先与子字段重叠绑定。
+      properties:
+        location:
+          type: string
+          description: 参数位置
+          example: header
+          enum:
+          - path
+          - query
+          - header
+          - body
+        name:
+          type: string
+          description: 字段名或 JSON Pointer
+          example: Authorization
+        binding:
+          description: 字面值或整体全局参数引用。
+          example:
+            kind: global
+            parameter_name: token
+          allOf:
+          - $ref: '#/components/schemas/BindingEdit'
+      required:
+      - location
+      - name
+      - binding
+      example:
+        location: header
+        name: Authorization
+        binding:
+          kind: global
+          parameter_name: token
+      additionalProperties: false
+    LiteralBindingView:
+      type: object
+      description: 敏感字面值省略 value 并返回 redacted=true。
+      properties:
+        kind:
+          type: string
+          description: 绑定方式
+          example: literal
+          enum:
+          - literal
+        value:
+          description: 保留 JSON 类型的固定值；类型与 value_type 或接口 Schema 一致；不支持 null。敏感值在响应中使用
+            redacted 标记并省略 value。
+          example:
+            order_id: 10
+          allOf:
+          - $ref: '#/components/schemas/Value'
+        redacted:
+          type: boolean
+          description: 是否隐藏字面值
+          example: true
+      required:
+      - kind
+      - redacted
+      example:
+        kind: literal
+        redacted: true
+      additionalProperties: false
+    BindingView:
+      description: 字面值或整体全局参数引用。
+      oneOf:
+      - $ref: '#/components/schemas/LiteralBindingView'
+      - $ref: '#/components/schemas/GlobalBinding'
+      example:
+        kind: global
+        parameter_name: token
+    FieldBindingView:
+      type: object
+      description: 字段绑定；path/query/header 用参数名；body 用 JSON Pointer，根对象或数组用空字符串。禁止重复或祖先与子字段重叠绑定。
+      properties:
+        location:
+          type: string
+          description: 参数位置
+          example: header
+          enum:
+          - path
+          - query
+          - header
+          - body
+        name:
+          type: string
+          description: 字段名或 JSON Pointer
+          example: Authorization
+        binding:
+          description: 字面值或整体全局参数引用。
+          example:
+            kind: global
+            parameter_name: token
+          allOf:
+          - $ref: '#/components/schemas/BindingView'
+      required:
+      - location
+      - name
+      - binding
+      example:
+        location: header
+        name: Authorization
+        binding:
+          kind: global
+          parameter_name: token
+      additionalProperties: false
+    RestParameterSource:
+      type: object
+      description: 引用本任务一个具体 task_steps.id，复用该步骤的接口版本及请求绑定，禁止独立接口配置。表达式支持标识符点分字段和非负数组下标，如
+        data.a、data.items[0].id；不支持函数、脚本、通配符或运算。HTTP 2xx 且 JSON 响应才提取；缺字段、null 或类型不匹配失败，不隐式转换。
+      properties:
+        step_id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          description: 本任务的稳定步骤 ID；保存前必须已创建，不能引用其他任务或被移除步骤。
+          example: 1
+        extract_expression:
+          type: string
+          minLength: 1
+          description: 响应取值表达式，data.a 从 {"data":{"a":1}} 提取整数 1。
+          example: data.a
+      required:
+      - step_id
+      - extract_expression
+      example:
+        step_id: 1
+        extract_expression: data.a
+      additionalProperties: false
+    FixedParameterInput:
+      type: object
+      description: 固定参数，新建必须提供 value。未指定 source_type 时兼容固定参数。
+      properties:
+        name:
+          type: string
+          description: 参数名称
+          example: token
+          minLength: 1
+          maxLength: 120
+        value_type:
+          type: string
+          description: 固定值类型
+          example: string
+          enum:
+          - string
+          - integer
+          - number
+          - boolean
+          - object
+          - array
+        sensitive:
+          type: boolean
+          description: 页面和日志脱敏标记
+          example: true
+          default: false
+        source_type:
+          type: string
+          description: 取值来源：固定值
+          example: fixed
+          enum:
+          - fixed
+          default: fixed
+        value:
+          $ref: '#/components/schemas/Value'
+      required:
+      - name
+      - value_type
+      - value
+      example:
+        name: order_id
+        value_type: integer
+        source_type: fixed
+        value: 1
+        sensitive: false
+      additionalProperties: false
+    FixedParameterEdit:
+      type: object
+      description: 已有同名同类型敏感固定参数可省略 value 保留原值；新建、改名、改类型或从 REST 切换到 fixed 必须提供值。
+      properties:
+        name:
+          type: string
+          description: 参数名称
+          example: token
+          minLength: 1
+          maxLength: 120
+        value_type:
+          type: string
+          description: 固定值类型
+          example: string
+          enum:
+          - string
+          - integer
+          - number
+          - boolean
+          - object
+          - array
+        sensitive:
+          type: boolean
+          description: 页面和日志脱敏标记
+          example: true
+          default: false
+        source_type:
+          type: string
+          description: 取值来源：固定值
+          example: fixed
+          enum:
+          - fixed
+          default: fixed
+        value:
+          $ref: '#/components/schemas/Value'
+      required:
+      - name
+      - value_type
+      example:
+        name: order_id
+        value_type: integer
+        source_type: fixed
+        value: 1
+        sensitive: false
+      additionalProperties: false
+    RestParameterInput:
+      type: object
+      description: REST 动态参数配置；不得提交 value。预览结果只用于界面展示，每次任务运行重新获取。
+      properties:
+        name:
+          type: string
+          description: 参数名称
+          example: token
+          minLength: 1
+          maxLength: 120
+        value_type:
+          type: string
+          description: 固定值类型
+          example: string
+          enum:
+          - string
+          - integer
+          - number
+          - boolean
+          - object
+          - array
+        sensitive:
+          type: boolean
+          description: 页面和日志脱敏标记
+          example: true
+          default: false
+        source_type:
+          type: string
+          description: 取值来源：REST 动态值
+          example: rest
+          enum:
+          - rest
+        rest_source:
+          $ref: '#/components/schemas/RestParameterSource'
+      required:
+      - name
+      - value_type
+      - source_type
+      - rest_source
+      example:
+        name: order_id
+        value_type: integer
+        source_type: rest
+        rest_source:
+          step_id: 1
+          extract_expression: data.a
+        sensitive: false
+      additionalProperties: false
+    RestParameterSourceView:
+      type: object
+      description: 引用本任务一个具体 task_steps.id，复用该步骤的接口版本及请求绑定，禁止独立接口配置。表达式支持标识符点分字段和非负数组下标，如
+        data.a、data.items[0].id；不支持函数、脚本、通配符或运算。HTTP 2xx 且 JSON 响应才提取；缺字段、null 或类型不匹配失败，不隐式转换。
+      properties:
+        step_id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          description: 本任务的稳定步骤 ID；保存前必须已创建，不能引用其他任务或被移除步骤。
+          example: 1
+        extract_expression:
+          type: string
+          minLength: 1
+          description: 响应取值表达式，data.a 从 {"data":{"a":1}} 提取整数 1。
+          example: data.a
+      required:
+      - step_id
+      - extract_expression
+      example:
+        step_id: 1
+        extract_expression: data.a
+      additionalProperties: false
+    RunParameter:
+      type: object
+      description: 本次参数初始化结果；REST 从引用步骤的本次响应提取，同一步骤可供多参数共享 request_id，敏感 value 省略。
+      properties:
+        id:
+          type: integer
+          description: 运行 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        parameter_id:
+          type: integer
+          description: 运行 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        name:
+          type: string
+          description: 参数名称
+          example: token
+          minLength: 1
+          maxLength: 120
+        position:
+          type: integer
+          description: 初始化序号
+          example: 1
+          minimum: 1
+        source_type:
+          type: string
+          description: 取值来源
+          example: rest
+          enum:
+          - fixed
+          - rest
+        value_type:
+          type: string
+          description: 固定值类型
+          example: string
+          enum:
+          - string
+          - integer
+          - number
+          - boolean
+          - object
+          - array
+        sensitive:
+          type: boolean
+          description: 页面和日志脱敏标记
+          example: true
+          default: false
+        value:
+          $ref: '#/components/schemas/Value'
+        status:
+          type: string
+          description: 步骤状态
+          example: pending
+          enum:
+          - pending
+          - running
+          - succeeded
+          - failed
+          - skipped
+        request_id:
+          type: integer
+          description: 请求记录 ID，未发送或跳过为 null
+          example: null
+          format: int32
+          nullable: true
+          minimum: 1
+        redacted:
+          type: boolean
+          description: 敏感值是否隐藏
+          example: false
+        started_at:
+          type: string
+          description: 开始时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          description: 结束时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        duration_ms:
+          type: integer
+          description: 耗时毫秒，未结束为 null
+          example: null
+          format: int64
+          nullable: true
+          minimum: 0
+        error_code:
+          type: string
+          description: 错误分类；服务重启遗留运行标记 EXECUTION_INTERRUPTED
+          example: null
+          nullable: true
+        error_message:
+          type: string
+          description: 脱敏错误说明
+          example: null
+          nullable: true
+      required:
+      - id
+      - parameter_id
+      - name
+      - position
+      - source_type
+      - value_type
+      - sensitive
+      - status
+      - request_id
+      - redacted
+      - started_at
+      - finished_at
+      - duration_ms
+      - error_code
+      - error_message
+      example:
+        id: 1
+        parameter_id: 1
+        name: order_id
+        position: 1
+        source_type: rest
+        value_type: integer
+        sensitive: false
+        status: succeeded
+        request_id: 1
+        value: 1
+        redacted: false
+        started_at: null
+        finished_at: null
+        duration_ms: null
+        error_code: null
+        error_message: null
+      additionalProperties: false
+    PreviewParameterRequest:
+      type: object
+      description: 显式预览发送真实 HTTP 请求。提交有序参数及步骤配置，步骤必须包含已保存稳定 ID，按参数初始化顺序执行所引用步骤至目标参数；同一步骤仅请求一次。仅执行初始化依赖步骤，不执行后续任务步骤，不创建任务运行或保存配置；后续运行仍重新获取。
+      properties:
+        base_url:
+          type: string
+          description: HTTP/HTTPS 地址，可带路径前缀，禁止 query、fragment 和用户凭据
+          example: https://api.example.com/service
+        timeout_seconds:
+          type: integer
+          description: 每次请求超时秒数
+          example: 30
+          minimum: 1
+          maximum: 300
+          default: 30
+        global_parameters:
+          type: array
+          description: 完整前序参数及目标参数配置；预览必须提供固定值，敏感值不得使用占位符。
+          items:
+            $ref: '#/components/schemas/GlobalParameterInput'
+          example:
+          - name: order_id
+            value_type: integer
+            source_type: rest
+            rest_source:
+              step_id: 1
+              extract_expression: data.a
+            sensitive: false
+        parameter_name:
+          type: string
+          description: 需要预览的 REST 参数名称
+          example: order_id
+        steps:
+          type: array
+          description: 本任务已保存稳定 ID 的步骤；前序依赖和目标引用必须存在且归属本任务。
+          items:
+            $ref: '#/components/schemas/StepInput'
+          example:
+          - id: 1
+            interface_id: 1
+            file_id: 1
+            version: 1
+            bindings: []
+      required:
+      - base_url
+      - global_parameters
+      - parameter_name
+      - steps
+      example:
+        base_url: https://api.example.com/service
+        global_parameters:
+        - name: order_id
+          value_type: integer
+          source_type: rest
+          rest_source:
+            step_id: 1
+            extract_expression: data.a
+          sensitive: false
+        parameter_name: order_id
+        steps:
+        - id: 1
+          interface_id: 1
+          file_id: 1
+          version: 1
+          bindings: []
+      additionalProperties: false
+    PreviewParameterResult:
+      type: object
+      description: REST 参数预览，敏感值省略 value 并返回 redacted=true；错误响应提供精确位置且不含敏感响应原值。
+      properties:
+        parameter_name:
+          type: string
+          description: 参数名称
+          example: order_id
+        value_type:
+          type: string
+          description: 固定值类型
+          example: string
+          enum:
+          - string
+          - integer
+          - number
+          - boolean
+          - object
+          - array
+        value:
+          $ref: '#/components/schemas/Value'
+        redacted:
+          type: boolean
+          description: 是否隐藏预览值
+          example: false
+      required:
+      - parameter_name
+      - value_type
+      - redacted
+      example:
+        parameter_name: order_id
+        value_type: integer
+        value: 1
+        redacted: false
+      additionalProperties: false
+  parameters:
+    ProjectId:
+      name: project_id
+      in: path
+      required: true
+      description: 项目唯一 ID；必须属于路径中的项目及文件，否则返回 404。
+      schema:
+        type: integer
+        description: 项目 ID。 数据库自增整数。
+        example: 1
+        format: int32
+        minimum: 1
+        maximum: 2147483647
+    Page:
+      name: page
+      in: query
+      required: false
+      description: 页码，从 1 开始。
+      schema:
+        type: integer
+        description: 页码。
+        example: 1
+        minimum: 1
+        default: 1
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      description: 每页条数，范围 1～100。
+      schema:
+        type: integer
+        description: 每页条数。
+        example: 20
+        minimum: 1
+        maximum: 100
+        default: 20
+    ConfirmDelete:
+      name: confirm
+      in: query
+      required: true
+      description: 页面展示影响范围并完成二次确认后显式传 true；缺失或 false 均不执行删除。
+      schema:
+        type: boolean
+        description: 删除确认标记。
+        example: true
+        enum:
+        - true
+    TaskId:
+      name: task_id
+      in: path
+      required: true
+      description: 资源必须属于路径中的项目、任务及运行，否则返回 404。
+      schema:
+        type: integer
+        description: task_id
+        example: 1
+        format: int32
+        minimum: 1
+        maximum: 2147483647
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      description: 资源必须属于路径中的项目、任务及运行，否则返回 404。
+      schema:
+        type: integer
+        description: run_id
+        example: 1
+        format: int32
+        minimum: 1
+        maximum: 2147483647
+    RequestId:
+      name: request_id
+      in: path
+      required: true
+      description: 资源必须属于路径中的项目、任务及运行，否则返回 404。
+      schema:
+        type: integer
+        description: request_id
+        example: 1
+        format: int32
+        minimum: 1
+        maximum: 2147483647
+tags:
+- name: 任务管理
+  description: 任务配置、步骤排序、参数绑定及删除
+- name: 任务运行
+  description: 顺序执行、运行历史及脱敏请求详情

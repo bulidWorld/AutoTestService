@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 早期初始化占位；阶段一业务表定义在 010_project_interfaces.xml，迁移元数据表由同步器维护。 -->
+<database name="auto_test_service" dialect="postgresql" />
