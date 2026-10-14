@@ -379,8 +379,8 @@ paths:
       - 任务运行
       summary: 运行任务
       description: 先静态校验配置、step_id 本任务归属、参数依赖及提取表达式；失败 400，不发请求。锁定任务行，queued/running
-        存在则 409；事务保存不可变配置快照、运行步骤及参数结果，返回 202。Pipeline 1 按参数顺序初始化：fixed 取固定值，REST 执行引用步骤并从响应提取；同一步骤在本次运行只请求一次，多个参数共享响应。源步骤首次执行前校验其所有绑定只能使用已初始化参数，禁止循环和后序依赖。所有初始化成功后，Pipeline
-        2 按步骤序号执行未被参数引用的步骤，初始化步骤不重复执行；全部步骤均为初始化步骤时允许直接成功。无并行、重试或自动重定向。每步发送前提交请求记录，发送后保存响应；HTTP
+        存在则 409；事务保存不可变配置快照、运行步骤及参数结果，返回 202。先初始化 fixed 参数，再按步骤序号发送请求；每步完成后执行绑定表达式并赋值全局参数，后续步骤只能引用已赋值的参数。同一步骤只请求一次，多个参数共享响应。
+        无并行、重试或自动重定向。每步发送前提交请求记录，发送后保存响应；HTTP
         2xx 才成功。HTTP 错误、连接失败、超时、非 JSON、字段缺失、null 或提取类型错误导致运行失败，未执行参数及步骤跳过；提取失败同时将源运行步骤标记
         failed。不同任务独立运行，关闭页面不终止执行。重启将未结束运行和正在执行的参数/步骤标记 EXECUTION_INTERRUPTED，未执行项跳过，不续跑。地址前缀正确拼接，path/query
         编码，query 数组重复键，对象 query 拒绝，JSON 保留结构。当前阶段无需认证。
@@ -608,7 +608,7 @@ paths:
       tags:
       - 任务管理
       summary: 预览 REST 全局参数
-      description: 显式预览发送真实 HTTP 请求。提交有序参数及步骤配置，步骤必须包含已保存稳定 ID，按参数初始化顺序执行所引用步骤至目标参数；同一步骤仅请求一次。仅执行初始化依赖步骤，不执行后续任务步骤，不创建任务运行或保存配置；后续运行仍重新获取。
+      description: 显式预览发送真实 HTTP 请求。提交有序参数及步骤配置，步骤必须包含已保存稳定 ID，按流水线步骤顺序执行至目标参数来源步骤；同一步骤仅请求一次。执行目标来源步骤及其之前的步骤，不执行后续步骤，不创建任务运行或保存配置；后续运行仍重新获取。
         步骤 ID 必须属于路径中的任务。当前阶段无需认证。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -653,7 +653,7 @@ paths:
                 $ref: '#/components/schemas/Error'
       requestBody:
         required: true
-        description: 显式预览发送真实 HTTP 请求。提交有序参数及步骤配置，步骤必须包含已保存稳定 ID，按参数初始化顺序执行所引用步骤至目标参数；同一步骤仅请求一次。仅执行初始化依赖步骤，不执行后续任务步骤，不创建任务运行或保存配置；后续运行仍重新获取。
+        description: 显式预览发送真实 HTTP 请求。提交有序参数及步骤配置，步骤必须包含已保存稳定 ID，按流水线步骤顺序执行至目标参数来源步骤；同一步骤仅请求一次。执行目标来源步骤及其之前的步骤，不执行后续步骤，不创建任务运行或保存配置；后续运行仍重新获取。
         content:
           application/json:
             schema:
@@ -735,7 +735,7 @@ components:
         - 1
         - 2
     GlobalParameterInput:
-      description: 全局参数支持固定或 REST 来源；数组顺序决定初始化顺序。
+      description: 全局参数支持固定或 REST 来源；固定值先初始化，REST 参数在对应步骤完成后赋值。
       oneOf:
       - $ref: '#/components/schemas/FixedParameterInput'
       - $ref: '#/components/schemas/RestParameterInput'
@@ -842,7 +842,7 @@ components:
         id: 1
       additionalProperties: false
     GlobalParameterEdit:
-      description: 全局参数支持固定或 REST 来源；数组顺序决定初始化顺序。
+      description: 全局参数支持固定或 REST 来源；固定值先初始化，REST 参数在对应步骤完成后赋值。
       oneOf:
       - $ref: '#/components/schemas/FixedParameterEdit'
       - $ref: '#/components/schemas/RestParameterInput'
@@ -1088,8 +1088,7 @@ components:
     TaskWrite:
       type: object
       description: 原子保存完整任务配置，参数及步骤数组决定各自顺序。REST 来源仅保存本任务的稳定 step_id 和表达式，复用步骤的接口版本与绑定。新步骤先保存获得
-        ID，再配置 REST 引用；复制任务时重建全部步骤 ID 并映射参数引用。被引用步骤在参数阶段执行一次，不在后续步骤阶段重复执行。参数引用的初始化步骤只能使用该步骤首次执行前已初始化的全局参数，拒绝自身、后序依赖及循环；同一步骤可供多个参数提取同一次响应，不重新请求。绑定失败或提取失败导致运行失败；静态校验不发请求。删除被引用步骤必须同时解除或改绑引用。至少有一个步骤才允许运行；全为初始化步骤时
-        Pipeline 2 为空，初始化全部成功则运行成功。
+        ID，再配置 REST 引用；复制任务时重建全部步骤 ID 并映射参数引用。所有步骤按步骤数组顺序执行一次，每步完成后提取其绑定参数。参数引用的初始化步骤只能使用该步骤首次执行前已初始化的全局参数，拒绝自身、后序依赖及循环；同一步骤可供多个参数提取同一次响应，不重新请求。绑定失败或提取失败导致运行失败；静态校验不发请求。删除被引用步骤必须同时解除或改绑引用。至少有一个步骤才允许运行；全部请求及表达式赋值成功则运行成功。
       properties:
         name:
           type: string
@@ -1116,7 +1115,7 @@ components:
           default: 30
         global_parameters:
           type: array
-          description: 有序全局参数配置，支持 fixed/rest；名称唯一，REST 只能引用前序参数。
+          description: 有序全局参数配置，支持 fixed/rest；名称唯一，步骤只能引用固定参数或前序步骤已赋值的参数。
           items:
             $ref: '#/components/schemas/GlobalParameterEdit'
           example: []
@@ -1167,7 +1166,7 @@ components:
           default: 30
         global_parameters:
           type: array
-          description: 有序全局参数配置，支持 fixed/rest；名称唯一，REST 只能引用前序参数。
+          description: 有序全局参数配置，支持 fixed/rest；名称唯一，步骤只能引用固定参数或前序步骤已赋值的参数。
           items:
             $ref: '#/components/schemas/GlobalParameter'
           example: []
@@ -2517,7 +2516,7 @@ components:
       additionalProperties: false
     PreviewParameterRequest:
       type: object
-      description: 显式预览发送真实 HTTP 请求。提交有序参数及步骤配置，步骤必须包含已保存稳定 ID，按参数初始化顺序执行所引用步骤至目标参数；同一步骤仅请求一次。仅执行初始化依赖步骤，不执行后续任务步骤，不创建任务运行或保存配置；后续运行仍重新获取。
+      description: 显式预览发送真实 HTTP 请求。提交有序参数及步骤配置，步骤必须包含已保存稳定 ID，按流水线步骤顺序执行至目标参数来源步骤；同一步骤仅请求一次。执行目标来源步骤及其之前的步骤，不执行后续步骤，不创建任务运行或保存配置；后续运行仍重新获取。
       properties:
         base_url:
           type: string

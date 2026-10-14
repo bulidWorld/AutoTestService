@@ -14,7 +14,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from app.service.errors import BusinessError
-from app.service.task_config import build_request, extract, scrub, sensitive_values
+from app.service.task_config import build_request, execution_plan, extract, scrub, sensitive_values
 
 LOGGER = logging.getLogger(__name__)
 LEADER_KEY = 741930512
@@ -112,25 +112,32 @@ def response_json(response, location):
 
 def preview(config, name):
     values, responses = {}, {}
-    steps = {s["id"]: s for s in config["steps"]}
     target = next((p for p in config["global_parameters"] if p["name"] == name), None)
     if not target or target["source_type"] != "rest":
         raise BusinessError(
             400, "INVALID_REQUEST", "目标必须为 REST 全局参数", "body.parameter_name"
         )
-    for i, p in enumerate(config["global_parameters"]):
+    for kind, p in execution_plan(config):
+        if kind == "step":
+            request = build_request(config, p, values=values)
+            response = request_http(request, config.get("timeout_seconds", 30))
+            responses[p["id"]] = response
+            if response["error_code"]:
+                raise BusinessError(422, response["error_code"], response["error_message"])
+            continue
+        i = config["global_parameters"].index(p)
         if p["source_type"] == "fixed":
             value = p["value"]
         else:
             source = p["rest_source"]
             sid = source["step_id"]
             location = f"body.global_parameters.{i}"
-            if sid not in responses:
-                request = build_request(config, steps[sid], values=values)
-                responses[sid] = response_json(
-                    request_http(request, config.get("timeout_seconds", 30)), location
-                )
-            value = extract(responses[sid], source["extract_expression"], p["value_type"], location)
+            value = extract(
+                response_json(responses[sid], location),
+                source["extract_expression"],
+                p["value_type"],
+                location,
+            )
         values[p["name"]] = value
         if p["name"] == name:
             result = {
@@ -236,8 +243,13 @@ class RunExecutor:
                 if not row or row["status"] != "running":
                     return
                 config = row["config_snapshot"]
-            steps = {s["id"]: s for s in config["steps"]}
-            for i, p in enumerate(config["global_parameters"]):
+            for kind, p in execution_plan(config):
+                if kind == "step":
+                    self.responses[p["id"]] = self.execute_step(
+                        config, p, p.get("execution_phase", "steps")
+                    )
+                    continue
+                i = config["global_parameters"].index(p)
                 with connection() as db:
                     self.check_active(db)
                     db.execute(
@@ -253,10 +265,6 @@ class RunExecutor:
                         source = p["rest_source"]
                         sid = source["step_id"]
                         location = f"global_parameters.{i}"
-                        if sid not in self.responses:
-                            self.responses[sid] = self.execute_step(
-                                config, steps[sid], "parameters"
-                            )
                         response, qid = self.responses[sid]
                         with connection() as db:
                             db.execute(
@@ -297,13 +305,6 @@ class RunExecutor:
                                 (exc.payload["code"], exc.payload["detail"], self.rid, sid),
                             )
                     raise
-            # Resolve and validate every remaining request before sending Pipeline 2 requests.
-            for s in config["steps"]:
-                if s["id"] not in self.responses:
-                    build_request(config, s, values=self.values)
-            for s in config["steps"]:
-                if s["id"] not in self.responses:
-                    self.execute_step(config, s, "steps")
             with connection() as db:
                 self.check_active(db)
                 db.execute(

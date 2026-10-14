@@ -378,6 +378,20 @@ def test_dynamic_shared_step_typed_request_and_history(api, server, database):
     }
     updated = schema_check(api.put(t, json=payload), "Task")
     assert updated["steps"][0]["execution_phase"] == "parameters"
+    from app.repository import projects
+
+    with projects.connect() as db:
+        parameters = db.execute(
+            "SELECT name,rest_source,value FROM task_parameters WHERE task_id=%s AND source_type='rest' ORDER BY name",
+            (updated["id"],),
+        ).fetchall()
+    assert {name: source for name, source, value in parameters} == {
+        parameter["name"]: parameter["rest_source"]
+        for parameter in payload["global_parameters"]
+        if parameter["source_type"] == "rest"
+    }
+    assert all(value is None for name, source, value in parameters)
+
     preview = schema_check(
         api.post(
             t + "/parameters/preview",
@@ -744,3 +758,84 @@ def test_invalid_execution_addresses_have_field_errors(url):
         error.value.status == 400
         and error.value.payload["issues"][0]["location"] == "body.base_url"
     )
+
+
+def test_step_assignments_follow_pipeline_order(monkeypatch):
+    from app.service.task_execution import preview
+
+    config = bare_config()
+    first = config["steps"][0]
+    second = copy.deepcopy(first)
+    second["id"] = 2
+    second["interface"]["path"] = "/next"
+    second["interface"]["parameters"] = [
+        {"name": "id", "location": "query", "required": True, "schema": {"type": "integer"}}
+    ]
+    second["bindings"] = [
+        {"location": "query", "name": "id", "binding": {"kind": "global", "parameter_name": "key1"}}
+    ]
+    config["steps"].append(second)
+    # Parameter display order must not reorder pipeline requests.
+    config["global_parameters"] = [
+        {
+            "name": "key2",
+            "value_type": "integer",
+            "source_type": "rest",
+            "rest_source": {"step_id": 2, "extract_expression": "data.a"},
+        },
+        {
+            "name": "key1",
+            "value_type": "integer",
+            "source_type": "rest",
+            "rest_source": {"step_id": 1, "extract_expression": "data.a"},
+        },
+    ]
+    validate_config(config)
+    urls = []
+
+    def request(request, timeout):
+        urls.append(request["actual_url"])
+        return {
+            "error_code": None,
+            "response_body_encoding": "utf-8",
+            "response_body": json.dumps({"data": {"a": len(urls)}}),
+        }
+
+    monkeypatch.setattr("app.service.task_execution.request_http", request)
+    assert preview(config, "key2")["value"] == 2
+    assert urls == ["http://localhost/prefix/ok", "http://localhost/prefix/next?id=1"]
+    config["steps"].reverse()
+    with pytest.raises(BusinessError):
+        validate_config(config)
+
+
+def test_run_keeps_steps_before_parameter_source(api, server):
+    _, _, _, create = asset(api, server)
+    task_url, initial = create(["/ok", "/init"])
+    payload = {
+        "name": initial["name"],
+        "base_url": server["url"],
+        "steps": initial["steps"],
+        "global_parameters": [
+            {
+                "name": "key1",
+                "value_type": "integer",
+                "source_type": "rest",
+                "rest_source": {
+                    "step_id": initial["steps"][1]["id"],
+                    "extract_expression": "data.a",
+                },
+            }
+        ],
+    }
+    # Use the editable step fields accepted by the write contract.
+    payload["steps"] = [
+        {key: step[key] for key in ["id", "interface_id", "file_id", "version", "bindings"]}
+        for step in initial["steps"]
+    ]
+    schema_check(api.put(task_url, json=payload), "Task")
+    run = schema_check(api.post(task_url + "/runs"), "Run", 202)
+    result = wait_run(api, task_url, run["id"])
+    assert result["run"]["status"] == "succeeded"
+    assert [call["path"] for call in server["calls"]] == ["/prefix/ok", "/prefix/init"]
+    assert result["global_parameters"][0]["value"] == 2

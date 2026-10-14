@@ -330,35 +330,34 @@ def validate_config(task, run=False):
         if p["source_type"] == "fixed" and not TYPES[p["value_type"]](p.get("value")):
             invalid("固定参数类型不匹配或缺少值", f"body.global_parameters.{i}.value")
         declarations[p["name"]] = p
-    ready, executed = {}, set()
-    for i, p in enumerate(task["global_parameters"]):
-        try:
-            if p["source_type"] == "rest":
-                source = p.get("rest_source") or {}
-                if set(source) != {"step_id", "extract_expression"}:
-                    invalid("REST 参数必须重新绑定本任务步骤及取值表达式", "rest_source")
-                expression_tokens(source["extract_expression"])
-                sid = source["step_id"]
-                if sid not in steps:
-                    invalid("REST 引用的步骤不存在或不属于本任务", "rest_source.step_id")
-                if sid not in executed:
-                    build_request(task, steps[sid], declarations=ready)
-                    executed.add(sid)
-            ready[p["name"]] = p
-        except BusinessError as exc:
-            exc.payload["issues"] = [
-                {"location": f"body.global_parameters.{i}", "reason": exc.payload["detail"]}
-            ]
-            raise
-    for i, step in enumerate(task["steps"]):
-        try:
-            build_request(task, step, declarations=declarations)
-        except BusinessError as exc:
-            exc.payload["issues"] = [
-                {"location": f"body.steps.{i}", "reason": exc.payload["detail"]}
-            ]
-            raise
+    ready = {}
+    for kind, item in execution_plan(task):
+        if kind == "parameter":
+            ready[item["name"]] = item
+        else:
+            build_request(task, item, declarations=ready)
     return task
+
+
+def execution_plan(task):
+    """Fixed values first, then each request followed by its response assignments."""
+    sources = {}
+    step_ids = {step["id"] for step in task["steps"]}
+    for parameter in task["global_parameters"]:
+        if parameter["source_type"] == "fixed":
+            yield "parameter", parameter
+            continue
+        source = parameter.get("rest_source") or {}
+        if set(source) != {"step_id", "extract_expression"}:
+            invalid("REST 参数必须绑定本任务步骤及取值表达式", "rest_source")
+        expression_tokens(source["extract_expression"])
+        if source["step_id"] not in step_ids:
+            invalid("REST 引用的步骤不存在或不属于本任务", "rest_source.step_id")
+        sources.setdefault(source["step_id"], []).append(parameter)
+    for step in task["steps"]:
+        yield "step", step
+        for parameter in sources.get(step["id"], []):
+            yield "parameter", parameter
 
 
 def sensitive_values(task, values=None):
