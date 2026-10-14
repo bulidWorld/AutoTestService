@@ -846,3 +846,76 @@ def test_run_keeps_steps_before_parameter_source(api, server):
     assert result["run"]["status"] == "succeeded"
     assert [call["path"] for call in server["calls"]] == ["/prefix/ok", "/prefix/init"]
     assert result["global_parameters"][0]["value"] == 2
+
+
+def test_create_task_with_unsaved_response_source(api, server):
+    p, _, steps, _ = asset(api, server)
+    payload = {
+        "name": "new-response-source",
+        "base_url": server["url"],
+        "global_parameters": [
+            {
+                "name": "order_id",
+                "source_type": "rest",
+                "value_type": "integer",
+                "rest_source": {"step_index": 0, "extract_expression": "data.a"},
+            }
+        ],
+        "steps": [copy.deepcopy(steps["/init"])],
+    }
+    created = schema_check(api.post(p + "/tasks", json=payload), "Task", 201)
+    source = created["global_parameters"][0]["rest_source"]
+    assert source == {"step_id": created["steps"][0]["id"], "extract_expression": "data.a"}
+    t = p + "/tasks/" + str(created["id"])
+    run = schema_check(api.post(t + "/runs"), "Run", 202)
+    result = wait_run(api, t, run["id"])
+    assert result["run"]["status"] == "succeeded"
+    assert result["global_parameters"][0]["value"] == 1
+
+    payload["name"] = created["name"]
+    payload["steps"].insert(0, copy.deepcopy(steps["/init"]))
+    payload["steps"][1]["id"] = created["steps"][0]["id"]
+    updated = schema_check(api.put(t, json=payload), "Task")
+    assert updated["global_parameters"][0]["rest_source"]["step_id"] == updated["steps"][0]["id"]
+    assert updated["steps"][0]["id"] != created["steps"][0]["id"]
+
+    for source in [
+        {"step_index": 2, "extract_expression": "data.a"},
+        {"step_index": 0, "step_id": created["steps"][0]["id"], "extract_expression": "data.a"},
+    ]:
+        payload["global_parameters"][0]["rest_source"] = source
+        assert api.put(t, json=payload).status_code == 400
+    assert api.get(t).json()["global_parameters"] == updated["global_parameters"]
+
+
+@pytest.mark.parametrize(
+    "source,valid",
+    [
+        ({"step_index": 0, "extract_expression": "data.a"}, True),
+        ({"step_id": 1, "extract_expression": "data.a"}, True),
+        ({"step_index": -1, "extract_expression": "data.a"}, False),
+        ({"step_index": 0, "step_id": 1, "extract_expression": "data.a"}, False),
+        ({"extract_expression": "data.a"}, False),
+    ],
+)
+def test_task_source_write_contract(source, valid):
+    from jsonschema import RefResolver
+
+    validator = OAS30Validator(
+        SPEC["components"]["schemas"]["TaskWrite"],
+        resolver=RefResolver.from_schema(SPEC),
+    )
+    payload = {
+        "name": "new",
+        "base_url": "http://localhost",
+        "steps": [],
+        "global_parameters": [
+            {
+                "name": "value",
+                "value_type": "integer",
+                "source_type": "rest",
+                "rest_source": source,
+            }
+        ],
+    }
+    assert validator.is_valid(payload) == valid

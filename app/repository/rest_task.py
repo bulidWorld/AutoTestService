@@ -168,6 +168,18 @@ def save(repository, path, body, creating=False):
         else:
             s["id"] = -(i + 1)
         s["position"] = i + 1
+    for i, p in enumerate(config["global_parameters"]):
+        source = p.get("rest_source")
+        if p["source_type"] != "rest" or not source or "step_index" not in source:
+            continue
+        index = source["step_index"]
+        if "step_id" in source or type(index) is not int or not 0 <= index < len(config["steps"]):
+            invalid(
+                "来源步骤下标无效或同时指定了步骤 ID",
+                f"body.global_parameters.{i}.rest_source.step_index",
+            )
+        source.pop("step_index")
+        source["step_id"] = config["steps"][index]["id"]
     enrich(repository, config)
     validate_config(config)
     if creating:
@@ -193,7 +205,9 @@ def save(repository, path, body, creating=False):
             ),
         )
     tid = row["id"]
+    step_ids = {}
     for s in config["steps"]:
+        original_id = s["id"]
         values = (
             tid,
             s["position"],
@@ -212,12 +226,16 @@ def save(repository, path, body, creating=False):
                 "UPDATE task_steps SET task_id=%s,position=%s,interface_id=%s,file_id=%s,version=%s,bindings=%s,updated_at=now() WHERE id=%s",
                 (*values, s["id"]),
             )
+        step_ids[original_id] = s["id"]
     repository.db.execute(
         "DELETE FROM task_steps WHERE task_id=%s AND NOT(id=ANY(%s))",
         (tid, [s["id"] for s in config["steps"]]),
     )
     parameter_ids = []
     for i, p in enumerate(config["global_parameters"]):
+        if p["source_type"] == "rest":
+            source = p["rest_source"]
+            source["step_id"] = step_ids[source["step_id"]]
         values = (
             tid,
             p["name"],

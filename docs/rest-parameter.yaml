@@ -477,16 +477,23 @@ components:
           format: int32
           minimum: 1
           maximum: 2147483647
-          description: 本任务的稳定步骤 ID；保存前必须已创建，不能引用其他任务或被移除步骤。
+          description: 本任务的稳定步骤 ID，与 step_index 二选一，不能引用其他任务或被移除步骤。
           example: 1
+        step_index:
+          type: integer
+          minimum: 0
+          description: 本次任务提交的 steps 数组下标，从 0 开始；可引用尚未保存的新步骤，保存后转换为稳定 step_id。与 step_id 二选一。
+          example: 0
         extract_expression:
           type: string
           minLength: 1
           description: 响应取值表达式，data.a 从 {"data":{"a":1}} 提取整数 1。
           example: data.a
       required:
-      - step_id
       - extract_expression
+      oneOf:
+      - required: [step_id]
+      - required: [step_index]
       example:
         step_id: 1
         extract_expression: data.a

@@ -2,7 +2,7 @@
 
 `rest-task.yaml` 的任务操作通过 `app/repository/rest_task.py` 显式绑定；参数预览及单次响应解析由 `rest-parameter.yaml` 与 `app/repository/rest_parameter.py` 提供。默认应用加载项目、任务及参数契约；加载时将跨文件组件引用打包为本地引用，合并 OpenAPI 文档时添加命名空间，避免同名 Schema 相互覆盖。HTTP 成功状态码来自契约：创建/复制为 201，启动运行为 202，校验及预览为 200。
 
-任务保存、复制、删除和启动在数据库事务中执行，按项目、任务顺序加锁。任务名称与参数名称唯一性、接口及步骤归属、引用有效性由程序校验。全局 REST 参数只保存 `rest_source.step_id` 与 `extract_expression`，复用该步骤的接口版本和绑定。新步骤先保存取得数据库稳定 ID，再配置 REST 参数引用。
+任务保存、复制、删除和启动在数据库事务中执行，按项目、任务顺序加锁。任务名称与参数名称唯一性、接口及步骤归属、引用有效性由程序校验。全局 REST 参数只保存 `rest_source.step_id` 与 `extract_expression`，复用该步骤的接口版本和绑定。新步骤与 REST 参数可同时提交：rest_source.step_index 使用本次提交 steps 数组从 0 开始的下标，与 step_id 二选一。服务先校验完整配置，再在同一事务保存步骤并将引用转换为数据库稳定 step_id；返回及持久化配置只包含 step_id。
 
 启动运行保存完整不可变配置快照，并创建运行参数及运行步骤记录。服务生命周期中的后台调度器通过 PostgreSQL 会话 advisory lock 选出唯一执行协调者，最多同时处理八个独立任务；同一任务的 queued/running 记录均阻止重复启动。每个任务内部顺序执行：先初始化固定全局参数，再按 task_steps 顺序逐步发送请求；每个步骤完成后执行其绑定表达式并赋值，后续步骤可引用已赋值的参数。同一步骤只请求一次，多参数共享响应。禁止引用当前或后续步骤尚未赋值的参数。步骤绑定复用 task_parameters：name 保存参数名称，rest_source.step_id 保存步骤 ID，rest_source.extract_expression 保存 data.a 等取值表达式；运行值仅存运行记录。
 
