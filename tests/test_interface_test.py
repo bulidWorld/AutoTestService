@@ -10,6 +10,7 @@ from jsonschema import RefResolver
 from openapi_schema_validator import OAS30Validator
 from openapi_spec_validator import validate
 
+from app.api.contract import load_contract
 from app.config.settings import ROOT
 from app.main import create_app
 
@@ -18,7 +19,7 @@ database = task_helpers.database
 server = task_helpers.server
 asset = task_helpers.asset
 
-SPEC = yaml.safe_load((ROOT / "docs/rest-project.yaml").read_text())
+SPEC = load_contract(ROOT / "docs/rest-project.yaml")
 
 
 def check(response, status=200, name="InterfaceTestResult"):

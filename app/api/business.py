@@ -33,7 +33,7 @@ def validate_value(value, schema, specification, location):
         invalid("字段类型、长度或取值无效", location + suffix)
 
 
-def bind(operation, specification, handler):
+def bind(operation, specification, handler, database_free=False):
     async def endpoint(request: Request):
         try:
             path, query, body, upload = {}, {}, {}, None
@@ -103,7 +103,10 @@ def bind(operation, specification, handler):
                         upload = await run_in_threadpool(
                             parse_upload, file.filename, await file.read(MAX_BYTES + 1)
                         )
-            result = await run_in_threadpool(execute, handler, path, query, body, upload)
+            if database_free:
+                result = await run_in_threadpool(handler, None, path, query, body, upload)
+            else:
+                result = await run_in_threadpool(execute, handler, path, query, body, upload)
             status = next(
                 int(code)
                 for code in operation["responses"]

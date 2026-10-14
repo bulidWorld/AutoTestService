@@ -17,21 +17,28 @@ from fastapi.testclient import TestClient
 from openapi_schema_validator import OAS30Validator
 from openapi_spec_validator import validate
 
+from app.api.contract import load_contract
 from app.config.settings import ROOT
 from app.main import create_app
 from app.repository.database import connect
 from app.service.errors import BusinessError
 from app.service.task_config import build_request, extract, validate_config
 
-SPEC = yaml.safe_load((ROOT / "docs/rest-task.yaml").read_text())
+SPEC = load_contract(ROOT / "docs/rest-task.yaml")
 
 
 def schema_check(response, name, status=200):
     assert response.status_code == status, response.text
     from jsonschema import RefResolver
 
+    specification = (
+        SPEC
+        if name in SPEC["components"]["schemas"]
+        else load_contract(ROOT / "docs/rest-parameter.yaml")
+    )
     OAS30Validator(
-        SPEC["components"]["schemas"][name], resolver=RefResolver.from_schema(SPEC)
+        specification["components"]["schemas"][name],
+        resolver=RefResolver.from_schema(specification),
     ).validate(response.json())
     return response.json()
 

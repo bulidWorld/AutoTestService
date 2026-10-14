@@ -3,6 +3,7 @@ import yaml
 from fastapi.testclient import TestClient
 from lxml import etree
 
+from app.api.contract import load_contract
 from app.config.settings import ROOT, load_settings
 from app.main import create_app
 
@@ -15,7 +16,7 @@ def local_logs(tmp_path, monkeypatch):
 
 
 def test_health_and_contract_are_consistent():
-    contract = yaml.safe_load((ROOT / "docs/rest-project.yaml").read_text())
+    contract = load_contract(ROOT / "docs/rest-project.yaml")
     with TestClient(create_app("docs/rest-project.yaml")) as client:
         assert client.get("/openapi.json").json() == contract
         response = client.get("/api/v1/health")
@@ -37,7 +38,7 @@ def test_readiness_unavailable_is_not_healthy(monkeypatch):
 
 
 def test_missing_handlers_bind_each_route_and_ignore_path_metadata(tmp_path):
-    contract = yaml.safe_load((ROOT / "docs/rest-project.yaml").read_text())
+    contract = load_contract(ROOT / "docs/rest-project.yaml")
     for path in ["/missing-one", "/missing-two"]:
         contract["paths"][path] = {
             "summary": "路径说明",

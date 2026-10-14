@@ -1519,46 +1519,6 @@ components:
             description: 订单名称
             example: 订单 A
       additionalProperties: true
-    ParameterDefinition:
-      type: object
-      description: 接口参数定义，保留 path、query、header 参数及其 Schema。
-      example:
-        name: order_id
-        location: path
-        description: 订单 ID
-        required: true
-        schema:
-          type: integer
-          example: 10
-      properties:
-        name:
-          type: string
-          description: 参数名称。
-          example: order_id
-        location:
-          type: string
-          description: 参数所在位置。
-          example: path
-          enum:
-          - path
-          - query
-          - header
-        description:
-          type: string
-          description: 参数说明；源文档没有说明时为空字符串。
-          example: 订单 ID
-        required:
-          type: boolean
-          description: 是否必填；path 参数始终必填。
-          example: true
-        schema:
-          $ref: '#/components/schemas/SchemaDocument'
-      required:
-      - name
-      - location
-      - description
-      - required
-      - schema
     RequestBodyDefinition:
       type: object
       description: JSON 或 multipart/form-data 请求体结构；不发送 HTTP 请求，仅供浏览和后续任务编排。
@@ -1782,7 +1742,7 @@ components:
               type: integer
               example: 10
           items:
-            $ref: '#/components/schemas/ParameterDefinition'
+            $ref: 'rest-parameter.yaml#/components/schemas/ParameterDefinition'
         request_body:
           $ref: '#/components/schemas/RequestBodyDefinition'
         responses:
@@ -2192,43 +2152,6 @@ components:
       required:
       - location
       - reason
-    InterfaceTestParameter:
-      type: object
-      description: 单次测试参数，值直接按接口 Schema 校验，保持 JSON 类型；未填写的可选参数不发送。header 允许额外认证头，禁止覆盖方法、地址、Host
-        等执行配置。
-      properties:
-        location:
-          type: string
-          description: 参数位置
-          example: path
-          enum:
-          - path
-          - query
-          - header
-        name:
-          type: string
-          description: 参数名称
-          example: order_id
-          minLength: 1
-        value:
-          description: JSON 类型参数值：string/integer/number/boolean/object/array，必须符合接口
-            Schema；不支持 null。
-          example: 10
-        sensitive:
-          type: boolean
-          description: 是否隐藏该参数及响应回显；认证头默认隐藏
-          example: false
-          default: false
-      required:
-      - location
-      - name
-      - value
-      example:
-        location: path
-        name: order_id
-        value: 10
-        sensitive: false
-      additionalProperties: false
     InterfaceTestInput:
       type: object
       description: 对选定的不可变接口版本执行一次；方法和路径从接口资产读取。地址允许路径前缀，不允许 query、fragment 或用户凭据；不创建任务或任务运行。支持
@@ -2249,7 +2172,7 @@ components:
           type: array
           description: 输入的参数及认证头；query 数组使用重复键，对象 query 拒绝。
           items:
-            $ref: '#/components/schemas/InterfaceTestParameter'
+            $ref: 'rest-parameter.yaml#/components/schemas/InterfaceTestParameter'
           example:
           - location: path
             name: order_id

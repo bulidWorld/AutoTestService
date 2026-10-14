@@ -1,0 +1,1049 @@
+# Design-first: 参数相关接口与模型的唯一来源；业务实现另行接入。
+openapi: 3.0.3
+info:
+  title: AutoTestService Parameter API
+  version: 0.1.0
+  description: 全局参数、接口参数及字段绑定模型；支持 REST 参数预览及对已有 HTTP 响应的单次表达式解析。
+paths:
+  /api/v1/projects/{project_id}/tasks/{task_id}/parameters/preview:
+    post:
+      operationId: previewRestParameter
+      tags:
+      - 任务管理
+      summary: 预览 REST 全局参数
+      description: 显式预览发送真实 HTTP 请求。提交有序参数及步骤配置，步骤必须包含已保存稳定 ID，按流水线步骤顺序执行至目标参数来源步骤；同一步骤仅请求一次。执行目标来源步骤及其之前的步骤，不执行后续步骤，不创建任务运行或保存配置；后续运行仍重新获取。
+        步骤 ID 必须属于路径中的任务。当前阶段无需认证。
+      parameters:
+      - $ref: 'rest-task.yaml#/components/parameters/ProjectId'
+      - $ref: 'rest-task.yaml#/components/parameters/TaskId'
+      responses:
+        '400':
+          description: 配置或表达式无效；不发送请求。
+          content:
+            application/json:
+              schema:
+                $ref: 'rest-task.yaml#/components/schemas/Error'
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: 'rest-task.yaml#/components/schemas/Error'
+        '409':
+          description: 任务名冲突、活动运行冲突或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: 'rest-task.yaml#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: 'rest-task.yaml#/components/schemas/Error'
+        '200':
+          description: 获取并提取成功，供界面自动填入预览值。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreviewParameterResult'
+        '422':
+          description: 源 REST 获取或提取失败；code 区分 HTTP_STATUS_ERROR/CONNECTION_ERROR/TIMEOUT/RESPONSE_NOT_JSON/EXTRACTION_NOT_FOUND/EXTRACTION_TYPE_ERROR，issues
+            定位参数。
+          content:
+            application/json:
+              schema:
+                $ref: 'rest-task.yaml#/components/schemas/Error'
+      requestBody:
+        required: true
+        description: 显式预览发送真实 HTTP 请求。提交有序参数及步骤配置，步骤必须包含已保存稳定 ID，按流水线步骤顺序执行至目标参数来源步骤；同一步骤仅请求一次。执行目标来源步骤及其之前的步骤，不执行后续步骤，不创建任务运行或保存配置；后续运行仍重新获取。
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreviewParameterRequest'
+  /api/v1/parameters/rest/extract:
+    post:
+      operationId: extractRestParameter
+      tags:
+      - 参数管理
+      summary: 单次测试 REST 参数取值
+      description: 使用客户端传入的 HTTP 响应体解析表达式并返回参数值；不发送 HTTP 请求，不保存参数或运行记录。解析规则与流水线 response_json 和 extract 一致，支持点分字段和非负数组下标。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtractRestParameterRequest'
+      responses:
+        '200':
+          description: 表达式解析成功，value 保留 JSON 类型。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtractRestParameterResult'
+        '400':
+          description: 请求字段、参数类型或表达式格式无效。
+          content:
+            application/json:
+              schema:
+                $ref: 'rest-task.yaml#/components/schemas/Error'
+        '422':
+          description: 响应不是有效 JSON（RESPONSE_NOT_JSON）、字段不存在（EXTRACTION_NOT_FOUND）或提取类型不匹配（EXTRACTION_TYPE_ERROR）；错误不回显原始响应。
+          content:
+            application/json:
+              schema:
+                $ref: 'rest-task.yaml#/components/schemas/Error'
+components:
+  schemas:
+    Value:
+      description: 保留 JSON 类型的固定值；类型与 value_type 或接口 Schema 一致；不支持 null。敏感值在响应中使用
+        redacted 标记并省略 value。
+      example:
+        order_id: 10
+      anyOf:
+      - type: string
+        description: JSON string
+        example: demo
+      - type: integer
+        description: JSON integer
+        example: 10
+      - type: number
+        description: JSON number
+        example: 1.5
+      - type: boolean
+        description: JSON boolean
+        example: true
+      - type: object
+        description: JSON object
+        example:
+          order_id: 10
+      - type: array
+        description: JSON array
+        example:
+        - 1
+        - 2
+    GlobalParameterInput:
+      description: 全局参数支持固定或 REST 来源；固定值先初始化，REST 参数在对应步骤完成后赋值。
+      oneOf:
+      - $ref: '#/components/schemas/FixedParameterInput'
+      - $ref: '#/components/schemas/RestParameterInput'
+      example:
+        name: order_id
+        value_type: integer
+        source_type: rest
+        rest_source:
+          step_id: 1
+          extract_expression: data.a
+        sensitive: false
+    GlobalParameter:
+      type: object
+      description: 参数配置详情；fixed 返回非敏感 value，rest 返回配置及接口名称，不返回缓存预览值。敏感字面绑定脱敏规则与任务步骤相同。
+      properties:
+        name:
+          type: string
+          description: 参数名称
+          example: token
+          minLength: 1
+          maxLength: 120
+        value_type:
+          type: string
+          description: 固定值类型
+          example: string
+          enum:
+          - string
+          - integer
+          - number
+          - boolean
+          - object
+          - array
+        sensitive:
+          type: boolean
+          description: 页面和日志脱敏标记
+          example: true
+          default: false
+        source_type:
+          type: string
+          description: 取值来源
+          example: rest
+          enum:
+          - fixed
+          - rest
+        value:
+          $ref: '#/components/schemas/Value'
+        rest_source:
+          $ref: '#/components/schemas/RestParameterSourceView'
+        position:
+          type: integer
+          description: 初始化序号
+          example: 1
+          minimum: 1
+        redacted:
+          type: boolean
+          description: 敏感值是否隐藏
+          example: false
+        interface_name:
+          type: string
+          description: 所引用步骤的接口名称；取 summary，缺省使用方法和路径。
+          example: 获取订单 ID
+        file_name:
+          type: string
+          description: 逻辑文件名称
+          example: 订单接口
+        current_version:
+          type: integer
+          description: REST 源文件当前版本
+          example: 1
+          minimum: 1
+        has_new_version:
+          type: boolean
+          description: 是否有新版本，仅提示
+          example: false
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          description: 任务参数稳定 ID，供运行快照与结果关联；更新同名参数保留 ID。
+          example: 1
+      required:
+      - name
+      - value_type
+      - source_type
+      - sensitive
+      - position
+      - redacted
+      - id
+      example:
+        name: order_id
+        value_type: integer
+        source_type: rest
+        rest_source:
+          step_id: 1
+          extract_expression: data.a
+        sensitive: false
+        position: 1
+        redacted: false
+        interface_name: 获取订单 ID
+        file_name: 订单接口
+        current_version: 1
+        has_new_version: false
+        id: 1
+      additionalProperties: false
+    GlobalParameterEdit:
+      description: 全局参数支持固定或 REST 来源；固定值先初始化，REST 参数在对应步骤完成后赋值。
+      oneOf:
+      - $ref: '#/components/schemas/FixedParameterEdit'
+      - $ref: '#/components/schemas/RestParameterInput'
+      example:
+        name: order_id
+        value_type: integer
+        source_type: rest
+        rest_source:
+          step_id: 1
+          extract_expression: data.a
+        sensitive: false
+    LiteralBinding:
+      type: object
+      description: 字面值绑定，整体保留类型。
+      properties:
+        kind:
+          type: string
+          description: 绑定方式
+          example: literal
+          enum:
+          - literal
+        value:
+          description: 保留 JSON 类型的固定值；类型与 value_type 或接口 Schema 一致；不支持 null。敏感值在响应中使用
+            redacted 标记并省略 value。
+          example:
+            order_id: 10
+          allOf:
+          - $ref: '#/components/schemas/Value'
+      required:
+      - kind
+      - value
+      example:
+        kind: literal
+        value: 10
+      additionalProperties: false
+    GlobalBinding:
+      type: object
+      description: 整体引用一个全局参数；不支持字符串内模板。
+      properties:
+        kind:
+          type: string
+          description: 绑定方式
+          example: global
+          enum:
+          - global
+        parameter_name:
+          type: string
+          description: 全局参数名称
+          example: token
+      required:
+      - kind
+      - parameter_name
+      example:
+        kind: global
+        parameter_name: token
+      additionalProperties: false
+    Binding:
+      description: 字面值或整体全局参数引用。
+      oneOf:
+      - $ref: '#/components/schemas/LiteralBinding'
+      - $ref: '#/components/schemas/GlobalBinding'
+      example:
+        kind: global
+        parameter_name: token
+    FieldBinding:
+      type: object
+      description: 字段绑定；path/query/header 用参数名；body 用 JSON Pointer，根对象或数组用空字符串。禁止重复或祖先与子字段重叠绑定。
+      properties:
+        location:
+          type: string
+          description: 参数位置
+          example: header
+          enum:
+          - path
+          - query
+          - header
+          - body
+        name:
+          type: string
+          description: 字段名或 JSON Pointer
+          example: Authorization
+        binding:
+          description: 字面值或整体全局参数引用。
+          example:
+            kind: global
+            parameter_name: token
+          allOf:
+          - $ref: '#/components/schemas/Binding'
+      required:
+      - location
+      - name
+      - binding
+      example:
+        location: header
+        name: Authorization
+        binding:
+          kind: global
+          parameter_name: token
+      additionalProperties: false
+    LiteralBindingEdit:
+      type: object
+      description: 新字面值必须有 value；编辑已有稳定步骤的相同字段可省略敏感 value 保留原值，绑定方式改变必须提供值。
+      properties:
+        kind:
+          type: string
+          description: 绑定方式
+          example: literal
+          enum:
+          - literal
+        value:
+          description: 保留 JSON 类型的固定值；类型与 value_type 或接口 Schema 一致；不支持 null。敏感值在响应中使用
+            redacted 标记并省略 value。
+          example:
+            order_id: 10
+          allOf:
+          - $ref: '#/components/schemas/Value'
+      required:
+      - kind
+      example:
+        kind: literal
+        value: 10
+      additionalProperties: false
+    BindingEdit:
+      description: 字面值或整体全局参数引用。
+      oneOf:
+      - $ref: '#/components/schemas/LiteralBindingEdit'
+      - $ref: '#/components/schemas/GlobalBinding'
+      example:
+        kind: global
+        parameter_name: token
+    FieldBindingEdit:
+      type: object
+      description: 字段绑定；path/query/header 用参数名；body 用 JSON Pointer，根对象或数组用空字符串。禁止重复或祖先与子字段重叠绑定。
+      properties:
+        location:
+          type: string
+          description: 参数位置
+          example: header
+          enum:
+          - path
+          - query
+          - header
+          - body
+        name:
+          type: string
+          description: 字段名或 JSON Pointer
+          example: Authorization
+        binding:
+          description: 字面值或整体全局参数引用。
+          example:
+            kind: global
+            parameter_name: token
+          allOf:
+          - $ref: '#/components/schemas/BindingEdit'
+      required:
+      - location
+      - name
+      - binding
+      example:
+        location: header
+        name: Authorization
+        binding:
+          kind: global
+          parameter_name: token
+      additionalProperties: false
+    LiteralBindingView:
+      type: object
+      description: 敏感字面值省略 value 并返回 redacted=true。
+      properties:
+        kind:
+          type: string
+          description: 绑定方式
+          example: literal
+          enum:
+          - literal
+        value:
+          description: 保留 JSON 类型的固定值；类型与 value_type 或接口 Schema 一致；不支持 null。敏感值在响应中使用
+            redacted 标记并省略 value。
+          example:
+            order_id: 10
+          allOf:
+          - $ref: '#/components/schemas/Value'
+        redacted:
+          type: boolean
+          description: 是否隐藏字面值
+          example: true
+      required:
+      - kind
+      - redacted
+      example:
+        kind: literal
+        redacted: true
+      additionalProperties: false
+    BindingView:
+      description: 字面值或整体全局参数引用。
+      oneOf:
+      - $ref: '#/components/schemas/LiteralBindingView'
+      - $ref: '#/components/schemas/GlobalBinding'
+      example:
+        kind: global
+        parameter_name: token
+    FieldBindingView:
+      type: object
+      description: 字段绑定；path/query/header 用参数名；body 用 JSON Pointer，根对象或数组用空字符串。禁止重复或祖先与子字段重叠绑定。
+      properties:
+        location:
+          type: string
+          description: 参数位置
+          example: header
+          enum:
+          - path
+          - query
+          - header
+          - body
+        name:
+          type: string
+          description: 字段名或 JSON Pointer
+          example: Authorization
+        binding:
+          description: 字面值或整体全局参数引用。
+          example:
+            kind: global
+            parameter_name: token
+          allOf:
+          - $ref: '#/components/schemas/BindingView'
+      required:
+      - location
+      - name
+      - binding
+      example:
+        location: header
+        name: Authorization
+        binding:
+          kind: global
+          parameter_name: token
+      additionalProperties: false
+    RestParameterSource:
+      type: object
+      description: 引用本任务一个具体 task_steps.id，复用该步骤的接口版本及请求绑定，禁止独立接口配置。表达式支持标识符点分字段和非负数组下标，如
+        data.a、data.items[0].id；不支持函数、脚本、通配符或运算。HTTP 2xx 且 JSON 响应才提取；缺字段、null 或类型不匹配失败，不隐式转换。
+      properties:
+        step_id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          description: 本任务的稳定步骤 ID；保存前必须已创建，不能引用其他任务或被移除步骤。
+          example: 1
+        extract_expression:
+          type: string
+          minLength: 1
+          description: 响应取值表达式，data.a 从 {"data":{"a":1}} 提取整数 1。
+          example: data.a
+      required:
+      - step_id
+      - extract_expression
+      example:
+        step_id: 1
+        extract_expression: data.a
+      additionalProperties: false
+    FixedParameterInput:
+      type: object
+      description: 固定参数，新建必须提供 value。未指定 source_type 时兼容固定参数。
+      properties:
+        name:
+          type: string
+          description: 参数名称
+          example: token
+          minLength: 1
+          maxLength: 120
+        value_type:
+          type: string
+          description: 固定值类型
+          example: string
+          enum:
+          - string
+          - integer
+          - number
+          - boolean
+          - object
+          - array
+        sensitive:
+          type: boolean
+          description: 页面和日志脱敏标记
+          example: true
+          default: false
+        source_type:
+          type: string
+          description: 取值来源：固定值
+          example: fixed
+          enum:
+          - fixed
+          default: fixed
+        value:
+          $ref: '#/components/schemas/Value'
+      required:
+      - name
+      - value_type
+      - value
+      example:
+        name: order_id
+        value_type: integer
+        source_type: fixed
+        value: 1
+        sensitive: false
+      additionalProperties: false
+    FixedParameterEdit:
+      type: object
+      description: 已有同名同类型敏感固定参数可省略 value 保留原值；新建、改名、改类型或从 REST 切换到 fixed 必须提供值。
+      properties:
+        name:
+          type: string
+          description: 参数名称
+          example: token
+          minLength: 1
+          maxLength: 120
+        value_type:
+          type: string
+          description: 固定值类型
+          example: string
+          enum:
+          - string
+          - integer
+          - number
+          - boolean
+          - object
+          - array
+        sensitive:
+          type: boolean
+          description: 页面和日志脱敏标记
+          example: true
+          default: false
+        source_type:
+          type: string
+          description: 取值来源：固定值
+          example: fixed
+          enum:
+          - fixed
+          default: fixed
+        value:
+          $ref: '#/components/schemas/Value'
+      required:
+      - name
+      - value_type
+      example:
+        name: order_id
+        value_type: integer
+        source_type: fixed
+        value: 1
+        sensitive: false
+      additionalProperties: false
+    RestParameterInput:
+      type: object
+      description: REST 动态参数配置；不得提交 value。预览结果只用于界面展示，每次任务运行重新获取。
+      properties:
+        name:
+          type: string
+          description: 参数名称
+          example: token
+          minLength: 1
+          maxLength: 120
+        value_type:
+          type: string
+          description: 固定值类型
+          example: string
+          enum:
+          - string
+          - integer
+          - number
+          - boolean
+          - object
+          - array
+        sensitive:
+          type: boolean
+          description: 页面和日志脱敏标记
+          example: true
+          default: false
+        source_type:
+          type: string
+          description: 取值来源：REST 动态值
+          example: rest
+          enum:
+          - rest
+        rest_source:
+          $ref: '#/components/schemas/RestParameterSource'
+      required:
+      - name
+      - value_type
+      - source_type
+      - rest_source
+      example:
+        name: order_id
+        value_type: integer
+        source_type: rest
+        rest_source:
+          step_id: 1
+          extract_expression: data.a
+        sensitive: false
+      additionalProperties: false
+    RestParameterSourceView:
+      type: object
+      description: 引用本任务一个具体 task_steps.id，复用该步骤的接口版本及请求绑定，禁止独立接口配置。表达式支持标识符点分字段和非负数组下标，如
+        data.a、data.items[0].id；不支持函数、脚本、通配符或运算。HTTP 2xx 且 JSON 响应才提取；缺字段、null 或类型不匹配失败，不隐式转换。
+      properties:
+        step_id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          description: 本任务的稳定步骤 ID；保存前必须已创建，不能引用其他任务或被移除步骤。
+          example: 1
+        extract_expression:
+          type: string
+          minLength: 1
+          description: 响应取值表达式，data.a 从 {"data":{"a":1}} 提取整数 1。
+          example: data.a
+      required:
+      - step_id
+      - extract_expression
+      example:
+        step_id: 1
+        extract_expression: data.a
+      additionalProperties: false
+    RunParameter:
+      type: object
+      description: 本次参数初始化结果；REST 从引用步骤的本次响应提取，同一步骤可供多参数共享 request_id，敏感 value 省略。
+      properties:
+        id:
+          type: integer
+          description: 运行 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        parameter_id:
+          type: integer
+          description: 运行 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        name:
+          type: string
+          description: 参数名称
+          example: token
+          minLength: 1
+          maxLength: 120
+        position:
+          type: integer
+          description: 初始化序号
+          example: 1
+          minimum: 1
+        source_type:
+          type: string
+          description: 取值来源
+          example: rest
+          enum:
+          - fixed
+          - rest
+        value_type:
+          type: string
+          description: 固定值类型
+          example: string
+          enum:
+          - string
+          - integer
+          - number
+          - boolean
+          - object
+          - array
+        sensitive:
+          type: boolean
+          description: 页面和日志脱敏标记
+          example: true
+          default: false
+        value:
+          $ref: '#/components/schemas/Value'
+        status:
+          type: string
+          description: 步骤状态
+          example: pending
+          enum:
+          - pending
+          - running
+          - succeeded
+          - failed
+          - skipped
+        request_id:
+          type: integer
+          description: 请求记录 ID，未发送或跳过为 null
+          example: null
+          format: int32
+          nullable: true
+          minimum: 1
+        redacted:
+          type: boolean
+          description: 敏感值是否隐藏
+          example: false
+        started_at:
+          type: string
+          description: 开始时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          description: 结束时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        duration_ms:
+          type: integer
+          description: 耗时毫秒，未结束为 null
+          example: null
+          format: int64
+          nullable: true
+          minimum: 0
+        error_code:
+          type: string
+          description: 错误分类；服务重启遗留运行标记 EXECUTION_INTERRUPTED
+          example: null
+          nullable: true
+        error_message:
+          type: string
+          description: 脱敏错误说明
+          example: null
+          nullable: true
+      required:
+      - id
+      - parameter_id
+      - name
+      - position
+      - source_type
+      - value_type
+      - sensitive
+      - status
+      - request_id
+      - redacted
+      - started_at
+      - finished_at
+      - duration_ms
+      - error_code
+      - error_message
+      example:
+        id: 1
+        parameter_id: 1
+        name: order_id
+        position: 1
+        source_type: rest
+        value_type: integer
+        sensitive: false
+        status: succeeded
+        request_id: 1
+        value: 1
+        redacted: false
+        started_at: null
+        finished_at: null
+        duration_ms: null
+        error_code: null
+        error_message: null
+      additionalProperties: false
+    PreviewParameterRequest:
+      type: object
+      description: 显式预览发送真实 HTTP 请求。提交有序参数及步骤配置，步骤必须包含已保存稳定 ID，按流水线步骤顺序执行至目标参数来源步骤；同一步骤仅请求一次。执行目标来源步骤及其之前的步骤，不执行后续步骤，不创建任务运行或保存配置；后续运行仍重新获取。
+      properties:
+        base_url:
+          type: string
+          description: HTTP/HTTPS 地址，可带路径前缀，禁止 query、fragment 和用户凭据
+          example: https://api.example.com/service
+        timeout_seconds:
+          type: integer
+          description: 每次请求超时秒数
+          example: 30
+          minimum: 1
+          maximum: 300
+          default: 30
+        global_parameters:
+          type: array
+          description: 完整前序参数及目标参数配置；预览必须提供固定值，敏感值不得使用占位符。
+          items:
+            $ref: '#/components/schemas/GlobalParameterInput'
+          example:
+          - name: order_id
+            value_type: integer
+            source_type: rest
+            rest_source:
+              step_id: 1
+              extract_expression: data.a
+            sensitive: false
+        parameter_name:
+          type: string
+          description: 需要预览的 REST 参数名称
+          example: order_id
+        steps:
+          type: array
+          description: 本任务已保存稳定 ID 的步骤；前序依赖和目标引用必须存在且归属本任务。
+          items:
+            $ref: 'rest-task.yaml#/components/schemas/StepInput'
+          example:
+          - id: 1
+            interface_id: 1
+            file_id: 1
+            version: 1
+            bindings: []
+      required:
+      - base_url
+      - global_parameters
+      - parameter_name
+      - steps
+      example:
+        base_url: https://api.example.com/service
+        global_parameters:
+        - name: order_id
+          value_type: integer
+          source_type: rest
+          rest_source:
+            step_id: 1
+            extract_expression: data.a
+          sensitive: false
+        parameter_name: order_id
+        steps:
+        - id: 1
+          interface_id: 1
+          file_id: 1
+          version: 1
+          bindings: []
+      additionalProperties: false
+    PreviewParameterResult:
+      type: object
+      description: REST 参数预览，敏感值省略 value 并返回 redacted=true；错误响应提供精确位置且不含敏感响应原值。
+      properties:
+        parameter_name:
+          type: string
+          description: 参数名称
+          example: order_id
+        value_type:
+          type: string
+          description: 固定值类型
+          example: string
+          enum:
+          - string
+          - integer
+          - number
+          - boolean
+          - object
+          - array
+        value:
+          $ref: '#/components/schemas/Value'
+        redacted:
+          type: boolean
+          description: 是否隐藏预览值
+          example: false
+      required:
+      - parameter_name
+      - value_type
+      - redacted
+      example:
+        parameter_name: order_id
+        value_type: integer
+        value: 1
+        redacted: false
+      additionalProperties: false
+    ParameterDefinition:
+      type: object
+      description: 接口参数定义，保留 path、query、header 参数及其 Schema。
+      example:
+        name: order_id
+        location: path
+        description: 订单 ID
+        required: true
+        schema:
+          type: integer
+          example: 10
+      properties:
+        name:
+          type: string
+          description: 参数名称。
+          example: order_id
+        location:
+          type: string
+          description: 参数所在位置。
+          example: path
+          enum:
+          - path
+          - query
+          - header
+        description:
+          type: string
+          description: 参数说明；源文档没有说明时为空字符串。
+          example: 订单 ID
+        required:
+          type: boolean
+          description: 是否必填；path 参数始终必填。
+          example: true
+        schema:
+          $ref: 'rest-project.yaml#/components/schemas/SchemaDocument'
+      required:
+      - name
+      - location
+      - description
+      - required
+      - schema
+    InterfaceTestParameter:
+      type: object
+      description: 单次测试参数，值直接按接口 Schema 校验，保持 JSON 类型；未填写的可选参数不发送。header 允许额外认证头，禁止覆盖方法、地址、Host
+        等执行配置。
+      properties:
+        location:
+          type: string
+          description: 参数位置
+          example: path
+          enum:
+          - path
+          - query
+          - header
+        name:
+          type: string
+          description: 参数名称
+          example: order_id
+          minLength: 1
+        value:
+          description: JSON 类型参数值：string/integer/number/boolean/object/array，必须符合接口
+            Schema；不支持 null。
+          example: 10
+        sensitive:
+          type: boolean
+          description: 是否隐藏该参数及响应回显；认证头默认隐藏
+          example: false
+          default: false
+      required:
+      - location
+      - name
+      - value
+      example:
+        location: path
+        name: order_id
+        value: 10
+        sensitive: false
+      additionalProperties: false
+    ExtractRestParameterRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - parameter_name
+      - value_type
+      - extract_expression
+      - response
+      properties:
+        parameter_name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: 待测试的全局参数名称，去除首尾空白后不能为空。
+          example: key1
+        value_type:
+          type: string
+          enum: [string, integer, number, boolean, object, array]
+          description: 预期参数类型，null 不允许；integer 不接受 boolean。
+          example: integer
+        extract_expression:
+          type: string
+          minLength: 1
+          description: 从响应 JSON 根节点取值，仅支持点分字段与非负数组下标，不执行脚本。
+          example: data.a
+        response:
+          $ref: '#/components/schemas/ParameterHttpResponse'
+      example:
+        parameter_name: key1
+        value_type: integer
+        extract_expression: data.a
+        response:
+          response_body: '{"data":{"a":1}}'
+          response_body_encoding: utf-8
+    ParameterHttpResponse:
+      type: object
+      additionalProperties: false
+      description: 已有 HTTP 响应的原始响应体；客户端传入文本，服务端复用 response_json 解析。不需要 URL、请求头或步骤 ID。
+      required:
+      - response_body
+      properties:
+        response_body:
+          type: string
+          description: 原始 HTTP 响应体文本，必须是有效 JSON，非标准 NaN/Infinity 被拒绝。
+          example: '{"data":{"a":1}}'
+        response_body_encoding:
+          type: string
+          enum: [utf-8, base64]
+          default: utf-8
+          description: 原始响应体编码；base64 与流水线规则一致，返回 RESPONSE_NOT_JSON。
+          example: utf-8
+    ExtractRestParameterResult:
+      type: object
+      additionalProperties: false
+      required:
+      - parameter_name
+      - value_type
+      - extract_expression
+      - value
+      properties:
+        parameter_name:
+          type: string
+          example: key1
+        value_type:
+          type: string
+          enum: [string, integer, number, boolean, object, array]
+          example: integer
+        extract_expression:
+          type: string
+          example: data.a
+        value:
+          $ref: '#/components/schemas/Value'
+      example:
+        parameter_name: key1
+        value_type: integer
+        extract_expression: data.a
+        value: 1

@@ -1,6 +1,6 @@
 # 任务业务实现
 
-`rest-task.yaml` 的 14 个操作通过 `app/repository/rest_task.py` 显式绑定。默认应用同时加载项目与任务契约；合并 OpenAPI 文档时为任务组件添加命名空间，避免两份契约中的同名 Schema 相互覆盖。HTTP 成功状态码来自契约：创建/复制为 201，启动运行为 202，校验及预览为 200。
+`rest-task.yaml` 的任务操作通过 `app/repository/rest_task.py` 显式绑定；参数预览及单次响应解析由 `rest-parameter.yaml` 与 `app/repository/rest_parameter.py` 提供。默认应用加载项目、任务及参数契约；加载时将跨文件组件引用打包为本地引用，合并 OpenAPI 文档时添加命名空间，避免同名 Schema 相互覆盖。HTTP 成功状态码来自契约：创建/复制为 201，启动运行为 202，校验及预览为 200。
 
 任务保存、复制、删除和启动在数据库事务中执行，按项目、任务顺序加锁。任务名称与参数名称唯一性、接口及步骤归属、引用有效性由程序校验。全局 REST 参数只保存 `rest_source.step_id` 与 `extract_expression`，复用该步骤的接口版本和绑定。新步骤先保存取得数据库稳定 ID，再配置 REST 参数引用。
 
@@ -33,3 +33,10 @@ AUTOTEST_DB_TESTS=1 .venv/bin/python -m pytest tests/test_task_business.py -q
 ```bash
 AUTOTEST_DB_TESTS=1 .venv/bin/python -m pytest tests/test_interface_test.py -q
 ```
+
+
+## REST 参数单次解析
+
+`POST /api/v1/parameters/rest/extract` 接收 `parameter_name`、`value_type`、`extract_expression` 和 `response`。例如 `response={"response_body":"{\"data\":{\"a\":1}}"}`，表达式为 `data.a`、类型为 `integer` 时返回 `value=1`。响应体编码默认 `utf-8`，按流水线规则解析 JSON 并校验提取类型。该接口不访问数据库、不发送 HTTP 请求、不保存配置或运行记录。
+
+无效输入或表达式返回 400；非 JSON 响应、缺少字段、类型不匹配返回 422，并提供错误分类及字段位置，不回显响应原值。

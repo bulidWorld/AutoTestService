@@ -11,6 +11,7 @@ import yaml
 from fastapi.testclient import TestClient
 from jsonschema import Draft4Validator
 
+from app.api.contract import load_contract
 from app.config.settings import ROOT
 from app.main import create_app
 from app.repository.database import connect
@@ -18,7 +19,7 @@ from app.service.errors import BusinessError
 from app.service.openapi_import import MAX_BYTES, parse_upload, redact
 
 EXAMPLES = ROOT / "context/requirement/1-1.support_mang_proj/examples"
-SPEC = yaml.safe_load((ROOT / "docs/rest-project.yaml").read_text())
+SPEC = load_contract(ROOT / "docs/rest-project.yaml")
 
 
 @pytest.fixture
@@ -325,7 +326,7 @@ def test_different_yaml_files_bind_operations_to_their_own_modules(tmp_path, mon
 
 
 def test_rest_project_contract_parses_multipart_file_fields():
-    content = (ROOT / "docs/rest-project.yaml").read_bytes()
+    content = yaml.safe_dump(SPEC, allow_unicode=True).encode()
     parsed = parse_upload("rest-project.yaml", content)
     assert len(parsed["interfaces"]) == 20
     upload_operation = next(
@@ -386,7 +387,7 @@ def test_rest_project_import_details_and_version_update(client, isolated_databas
         "id"
     ]
     path = f"/api/v1/projects/{pid}/yaml-files"
-    content = (ROOT / "docs/rest-project.yaml").read_bytes()
+    content = yaml.safe_dump(SPEC, allow_unicode=True).encode()
     imported = check(
         client.post(
             path,
