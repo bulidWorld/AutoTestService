@@ -163,6 +163,18 @@ def assign_body(body, pointer, value, schema, document):
     return body
 
 
+def global_binding_name(binding):
+    """An entire {name} literal is shorthand for a typed global binding."""
+    if binding["kind"] == "global":
+        return binding["parameter_name"]
+    value = binding.get("value")
+    if isinstance(value, str):
+        match = re.fullmatch(r"\{([^{}]+)\}", value)
+        if match:
+            return match.group(1)
+    return None
+
+
 def build_request(task, step, values=None, declarations=None):
     """Validate and render one request. Declarations enable static checks without REST calls."""
     interface, document = step["interface"], step["document"]
@@ -203,8 +215,8 @@ def build_request(task, step, values=None, declarations=None):
             or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name)
         ):
             invalid("请求头名称无效或覆盖执行配置", "steps.bindings")
-        if binding["kind"] == "global":
-            parameter_name = binding["parameter_name"]
+        parameter_name = global_binding_name(binding)
+        if parameter_name is not None:
             if declarations is not None:
                 if parameter_name not in declarations:
                     invalid("全局参数不存在或未初始化", "steps.bindings")
@@ -225,7 +237,7 @@ def build_request(task, step, values=None, declarations=None):
                     if location == "body":
                         dynamic_body = True
             else:
-                if parameter_name not in values:
+                if parameter_name not in (values or {}):
                     invalid("全局参数未初始化", "steps.bindings")
                 value = values[parameter_name]
                 validate_json(value, schema, document, "steps.bindings")
@@ -371,11 +383,14 @@ def sensitive_values(task, values=None):
         for field in step["bindings"]:
             if field["location"] == "header" and field["name"].lower() in SECRET_HEADERS:
                 b = field["binding"]
-                value = (
-                    b.get("value")
-                    if b["kind"] == "literal"
-                    else (values or {}).get(b["parameter_name"])
-                )
+                parameter_name = global_binding_name(b)
+                if parameter_name is None:
+                    value = b.get("value")
+                else:
+                    parameter = next(
+                        (p for p in task["global_parameters"] if p["name"] == parameter_name), {}
+                    )
+                    value = (values or {}).get(parameter_name, parameter.get("value"))
                 if value is not None:
                     result.extend(secret_strings(value))
     return result

@@ -147,6 +147,86 @@ def test_static_dependency_rejection_sends_no_requests():
         validate_config(config)
 
 
+@pytest.mark.parametrize("location", ["path", "query", "header", "body"])
+def test_placeholder_uses_typed_global_value(location):
+    config = bare_config()
+    config["global_parameters"] = [
+        {"name": "test_pro_id", "source_type": "fixed", "value_type": "integer", "value": 42}
+    ]
+    step = config["steps"][0]
+    name = "/project_id" if location == "body" else "project_id"
+    if location == "body":
+        step["interface"]["request_body"] = {
+            "content_type": "application/json",
+            "required": True,
+            "schema": {
+                "type": "object",
+                "required": ["project_id"],
+                "properties": {"project_id": {"type": "integer"}},
+            },
+        }
+    else:
+        step["interface"]["parameters"] = [
+            {"name": name, "location": location, "required": True, "schema": {"type": "integer"}}
+        ]
+    if location == "path":
+        step["interface"]["path"] = "/api/v1/projects/{project_id}"
+    step["bindings"] = [
+        {
+            "location": location,
+            "name": name,
+            "binding": {"kind": "literal", "value": "{test_pro_id}"},
+        }
+    ]
+    original = copy.deepcopy(config)
+    validate_config(config)
+    request = build_request(config, step, values={"test_pro_id": 42})
+    if location == "path":
+        assert request["actual_url"] == "http://localhost/prefix/api/v1/projects/42"
+    elif location == "query":
+        assert request["actual_url"].endswith("?project_id=42")
+    elif location == "header":
+        assert request["request_headers"] == [{"name": name, "value": "42"}]
+    else:
+        assert json.loads(request["request_body"]) == {"project_id": 42}
+    assert config == original
+    with pytest.raises(BusinessError):
+        build_request(config, step, values={})
+    config["global_parameters"] = []
+    with pytest.raises(BusinessError):
+        validate_config(config)
+
+
+def test_placeholder_checks_dynamic_order_type_and_secret_headers():
+    from app.service.task_config import sensitive_values
+
+    config = bare_config()
+    step = config["steps"][0]
+    step["bindings"] = [
+        {
+            "location": "header",
+            "name": "Authorization",
+            "binding": {"kind": "literal", "value": "{token}"},
+        }
+    ]
+    config["global_parameters"] = [
+        {
+            "name": "token",
+            "source_type": "rest",
+            "value_type": "string",
+            "rest_source": {"step_id": 1, "extract_expression": "data.token"},
+        }
+    ]
+    with pytest.raises(BusinessError):
+        validate_config(config)
+    assert "secret" in sensitive_values(config, {"token": "secret"})
+    config["global_parameters"] = [
+        {"name": "token", "source_type": "fixed", "value_type": "integer", "value": 42}
+    ]
+    with pytest.raises(BusinessError):
+        validate_config(config)
+
+
 def test_both_contracts_registered_with_valid_references(monkeypatch):
     monkeypatch.setattr("app.service.task_execution.Dispatcher.start", lambda _: None)
     with TestClient(create_app()) as client:
@@ -330,7 +410,8 @@ def wait_run(api, t, rid):
     pytest.fail("run did not finish")
 
 
-def test_dynamic_shared_step_typed_request_and_history(api, server, database):
+@pytest.mark.parametrize("placeholder", [False, True])
+def test_dynamic_shared_step_typed_request_and_history(api, server, database, placeholder):
     p, fid, steps, create = asset(api, server)
     t, initial = create(["/init"])
     sid = initial["steps"][0]["id"]
@@ -383,6 +464,12 @@ def test_dynamic_shared_step_typed_request_and_history(api, server, database):
             ),
         ],
     }
+    if placeholder:
+        for field in payload["steps"][1]["bindings"]:
+            field["binding"] = {
+                "kind": "literal",
+                "value": "{" + field["binding"]["parameter_name"] + "}",
+            }
     updated = schema_check(api.put(t, json=payload), "Task")
     assert updated["steps"][0]["execution_phase"] == "parameters"
     from app.repository import projects
