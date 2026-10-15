@@ -80,6 +80,7 @@
       <columns>
         <column name="id" type="integer" nullable="false" identity="true" comment="数据库自增整数主键" />
         <column name="task_id" type="integer" comment="所属任务 ID" nullable="false" />
+        <column name="group_id" type="integer" comment="组运行来源 ID；整任务运行为 NULL；组删除后保留该值，组名称、成员顺序和依赖在 config_snapshot 保存" nullable="true" />
         <column name="project_id" type="integer" comment="所属项目 ID" nullable="false" />
         <column name="status" type="varchar(16)" comment="queued/running/succeeded/failed" nullable="false" default="'queued'" />
         <column name="config_snapshot" type="jsonb" comment="不可变任务配置及全部参数源接口定义；REST 结果不写回快照或任务，另存运行参数；读取脱敏" nullable="false" />

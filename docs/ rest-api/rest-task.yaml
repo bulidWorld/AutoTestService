@@ -1175,6 +1175,13 @@ components:
           format: int32
           minimum: 1
           maximum: 2147483647
+        group_id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+          description: 组运行来源 ID，必须返回；整任务运行为 null，组运行返回组 ID；组删除后仍保留历史来源。
         project_id:
           type: integer
           description: 项目 ID
@@ -1229,6 +1236,7 @@ components:
       required:
       - id
       - task_id
+      - group_id
       - project_id
       - status
       - created_at
@@ -1240,6 +1248,7 @@ components:
       example:
         id: 1
         task_id: 1
+        group_id: null
         project_id: 1
         status: queued
         created_at: '2026-10-13T07:00:00Z'
@@ -1343,6 +1352,10 @@ components:
       type: object
       description: 脱敏的不可变任务配置，包含参数到稳定步骤 ID 的引用映射和全部步骤接口定义。运行结果独立保存，不修改快照。
       properties:
+        group:
+          description: 组运行的不可变组配置，包含组 ID、名称及有序成员；整任务运行不返回此字段。
+          allOf:
+          - $ref: 'rest-group.yaml#/components/schemas/Group'
         task:
           description: 任务详情；敏感值不直接返回，已有敏感值编辑保留规则见 TaskWrite。
           example:

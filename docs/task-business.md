@@ -1,6 +1,6 @@
 # 任务业务实现
 
-`rest-task.yaml` 的任务操作通过 `app/repository/rest_task.py` 显式绑定；参数预览及单次响应解析由 `rest-parameter.yaml` 与 `app/repository/rest_parameter.py` 提供。默认应用加载项目、任务及参数契约；加载时将跨文件组件引用打包为本地引用，合并 OpenAPI 文档时添加命名空间，避免同名 Schema 相互覆盖。HTTP 成功状态码来自契约：创建/复制为 201，启动运行为 202，校验及预览为 200。
+`rest-task.yaml` 的任务操作通过 `app/repository/rest_task.py` 显式绑定；参数预览及单次响应解析由 `rest-parameter.yaml` 与 `app/repository/rest_parameter.py` 提供。默认应用加载项目、任务、参数及步骤组契约；加载时将跨文件组件引用打包为本地引用，合并 OpenAPI 文档时添加命名空间，避免同名 Schema 相互覆盖。HTTP 成功状态码来自契约：创建/复制为 201，启动运行为 202，校验及预览为 200。
 
 任务保存、复制、删除和启动在数据库事务中执行，按项目、任务顺序加锁。任务名称与参数名称唯一性、接口及步骤归属、引用有效性由程序校验。全局 REST 参数只保存 `rest_source.step_id` 与 `extract_expression`，复用该步骤的接口版本和绑定。新步骤与 REST 参数可同时提交：rest_source.step_index 使用本次提交 steps 数组从 0 开始的下标，与 step_id 二选一。服务先校验完整配置，再在同一事务保存步骤并将引用转换为数据库稳定 step_id；返回及持久化配置只包含 step_id。
 
@@ -50,3 +50,23 @@ curl -X POST http://localhost:8000/api/v1/projects/1/tasks/import \
   -F 'file=@docs/examples/task.xml;type=application/xml' \
   -F 'base_url=https://api.example.com'
 ```
+
+## 步骤组
+
+`rest-group.yaml` 通过 `app/repository/rest_group.py` 实现组管理和运行。组属于任务，
+同一步骤可属于多个组；成员数组决定组内执行顺序。名称去除首尾空白后任务内唯一，
+允许保存空组，运行空组返回 400。删除组需要 `confirm=true`，成功返回 204 空响应。
+
+组运行复用任务运行执行器、队列及运行查询接口。启动时锁定项目及任务，整任务和组运行
+共享任务的 queued/running 互斥。组管理写操作也拒绝在任务活动运行期间执行。
+组快照包含组名、有序成员和接口配置；查询运行详情时 `config_snapshot.group` 返回组快照，
+`run.group_id` 标识来源。删除或修改组不改变运行快照，整任务运行的 `group_id` 为 null。
+
+组运行先初始化固定参数，只保留组内请求及断言所需的 REST 参数。所有组内步骤的绑定均
+参与依赖校验，参数源步骤必须在组内并排在使用者之前；缺源、逆序或循环依赖在创建运行前
+返回 400，不额外执行组外步骤。Python 断言支持静态识别 `globalParam["name"]` 和
+`globalParam.get("name")`；动态键、遍历或传递整个参数字典时，保守地检查全部声明参数。
+断言在当前步骤提取参数之前执行，不能使用当前或后续步骤才产生的参数。
+
+复制任务同时复制组并映射到新步骤 ID；任务配置移除步骤时清理成员引用并重排组内顺序。
+删除任务或项目会清理组及成员，保留单独删除组之前产生的运行历史。

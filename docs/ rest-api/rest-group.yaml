@@ -1,0 +1,403 @@
+# 步骤组管理与运行契约。
+openapi: 3.0.3
+info:
+  title: AutoTestService Group API
+  version: 0.1.0
+  description: 任务内步骤组管理与组运行契约。组不嵌套，成员引用现有步骤；整任务运行仍执行全部任务步骤一次，不按组重复执行。
+paths:
+  /api/v1/projects/{project_id}/tasks/{task_id}/groups:
+    get:
+      operationId: listTaskGroups
+      tags:
+      - 步骤组
+      summary: 查询任务下的步骤组
+      description: 按 updated_at 降序、id 升序分页；支持组名包含搜索。
+      parameters:
+      - $ref: rest-task.yaml#/components/parameters/ProjectId
+      - $ref: rest-task.yaml#/components/parameters/TaskId
+      - $ref: rest-task.yaml#/components/parameters/Page
+      - $ref: rest-task.yaml#/components/parameters/PageSize
+      - name: name
+        in: query
+        schema:
+          type: string
+        description: 名称不区分大小写包含搜索，空值不筛选。
+      responses:
+        '200':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupPage'
+        '400':
+          description: 请求或配置无效；运行校验失败不创建运行、不发送请求。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '409':
+          description: 组名冲突、任务存在 queued/running 运行或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+    post:
+      operationId: createTaskGroup
+      tags:
+      - 步骤组
+      summary: 创建步骤组
+      description: 事务锁定任务行，校验组名及所有步骤归属后原子保存组和成员；同一步骤可加入多个组。任务存在活动运行时拒绝修改。
+      parameters:
+      - $ref: rest-task.yaml#/components/parameters/ProjectId
+      - $ref: rest-task.yaml#/components/parameters/TaskId
+      responses:
+        '201':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+        '400':
+          description: 请求或配置无效；运行校验失败不创建运行、不发送请求。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '409':
+          description: 组名冲突、任务存在 queued/running 运行或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupInput'
+  /api/v1/projects/{project_id}/tasks/{task_id}/groups/{group_id}:
+    get:
+      operationId: getTaskGroup
+      tags:
+      - 步骤组
+      summary: 查询步骤组
+      description: 返回组配置及有序成员 ID。
+      parameters:
+      - $ref: rest-task.yaml#/components/parameters/ProjectId
+      - $ref: rest-task.yaml#/components/parameters/TaskId
+      - name: group_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        description: 组必须属于路径指定的任务和项目，否则 404。
+      responses:
+        '200':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+        '400':
+          description: 请求或配置无效；运行校验失败不创建运行、不发送请求。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '409':
+          description: 组名冲突、任务存在 queued/running 运行或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+    put:
+      operationId: updateTaskGroup
+      tags:
+      - 步骤组
+      summary: 完整更新步骤组
+      description: 事务锁定任务行后完整替换名称、描述和成员顺序；校验成员归属、重复及组名唯一性。任务存在活动运行时拒绝修改。
+      parameters:
+      - $ref: rest-task.yaml#/components/parameters/ProjectId
+      - $ref: rest-task.yaml#/components/parameters/TaskId
+      - name: group_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        description: 组必须属于路径指定的任务和项目，否则 404。
+      responses:
+        '200':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+        '400':
+          description: 请求或配置无效；运行校验失败不创建运行、不发送请求。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '409':
+          description: 组名冲突、任务存在 queued/running 运行或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupInput'
+    delete:
+      operationId: deleteTaskGroup
+      tags:
+      - 步骤组
+      summary: 删除步骤组
+      description: 事务锁定任务行后删除组及成员关系，保留原任务步骤及全部运行历史；任务存在活动运行时拒绝删除。
+      parameters:
+      - $ref: rest-task.yaml#/components/parameters/ProjectId
+      - $ref: rest-task.yaml#/components/parameters/TaskId
+      - name: group_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        description: 组必须属于路径指定的任务和项目，否则 404。
+      - $ref: rest-task.yaml#/components/parameters/ConfirmDelete
+      responses:
+        '204':
+          description: 操作成功。
+        '400':
+          description: 请求或配置无效；运行校验失败不创建运行、不发送请求。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '409':
+          description: 组名冲突、任务存在 queued/running 运行或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+  /api/v1/projects/{project_id}/tasks/{task_id}/groups/{group_id}/runs:
+    post:
+      operationId: startTaskGroupRun
+      tags:
+      - 步骤组
+      summary: 运行组内所有步骤
+      description: 校验组非空及全部成员、绑定、断言和参数依赖；按 step_ids 顺序执行全部成员，每个步骤最多请求一次。固定全局参数先初始化；REST
+        参数沿用任务执行语义，所需源步骤必须在组内并排在使用者之前，禁止自动执行组外步骤，缺失或顺序错误返回 400。锁定任务行检查该任务所有 queued/running
+        运行（含整任务和其他组），存在则 409；事务创建 task_runs，设置 group_id，保存包含组 ID、名称、有序成员、所需参数及接口定义的不可变
+        config_snapshot，仅为组内步骤及所需参数创建运行结果。复用任务地址、超时、断言、脱敏、失败跳过及重启中断语义。通过 rest-task
+        的运行列表、详情和请求接口查询结果；修改或删除组不影响历史。
+      parameters:
+      - $ref: rest-task.yaml#/components/parameters/ProjectId
+      - $ref: rest-task.yaml#/components/parameters/TaskId
+      - name: group_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        description: 组必须属于路径指定的任务和项目，否则 404。
+      responses:
+        '202':
+          description: 操作成功。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Run
+        '400':
+          description: 请求或配置无效；运行校验失败不创建运行、不发送请求。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '404':
+          description: 资源不存在或归属不匹配。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '409':
+          description: 组名冲突、任务存在 queued/running 运行或关联状态不允许操作。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: rest-task.yaml#/components/schemas/Error
+components:
+  schemas:
+    GroupInput:
+      type: object
+      additionalProperties: false
+      required:
+      - name
+      - step_ids
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: 去除首尾空白后不能为空，任务内区分大小写唯一。
+        description:
+          type: string
+          maxLength: 2000
+          default: ''
+        step_ids:
+          type: array
+          uniqueItems: true
+          items:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 2147483647
+          description: 按组内执行顺序排列的本任务稳定步骤 ID；允许空组草稿，运行时至少一个步骤。
+    Group:
+      type: object
+      required:
+      - id
+      - task_id
+      - name
+      - description
+      - step_ids
+      - created_at
+      - updated_at
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        task_id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: 去除首尾空白后不能为空，任务内区分大小写唯一。
+        description:
+          type: string
+          maxLength: 2000
+          default: ''
+        step_ids:
+          type: array
+          uniqueItems: true
+          items:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 2147483647
+          description: 按组内执行顺序排列的本任务稳定步骤 ID；允许空组草稿，运行时至少一个步骤。
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    GroupPage:
+      type: object
+      required:
+      - items
+      - total
+      - page
+      - page_size
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Group'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+tags:
+- name: 步骤组
+  description: 任务内步骤分组及顺序执行

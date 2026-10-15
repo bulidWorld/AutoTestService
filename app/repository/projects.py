@@ -188,7 +188,7 @@ def execute(handler, path, query, body, upload=None):
             # would corrupt typed object values whose property names resemble credentials.
             return (
                 result
-                if handler.__module__ == "app.repository.rest_task"
+                if handler.__module__ in {"app.repository.rest_task", "app.repository.rest_group"}
                 or handler.__name__ == "testInterface"
                 else redact(result)
             )

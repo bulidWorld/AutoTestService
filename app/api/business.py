@@ -5,7 +5,7 @@ import logging
 
 from fastapi import Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from openapi_schema_validator import OAS30Validator
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
@@ -117,6 +117,8 @@ def bind(operation, specification, handler, database_free=False):
                 for code in operation["responses"]
                 if code.isdigit() and 200 <= int(code) < 300
             )
+            if status == 204:
+                return Response(status_code=204)
             return JSONResponse(status_code=status, content=jsonable_encoder(result))
         except BusinessError as exc:
             return error_response(request, exc)

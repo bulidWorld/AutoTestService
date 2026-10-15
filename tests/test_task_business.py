@@ -1183,3 +1183,174 @@ def test_xml_task_import_atomic(api, server):
     invalid_xml = xml.replace(b"xml-task", b"bad-task").replace(b"/ok", b"/unknown")
     assert upload(invalid_xml).status_code == 400
     assert api.get(p + "/tasks", params={"name": "bad-task"}).json()["total"] == 0
+
+
+def test_group_crud_copy_and_step_cleanup(api, server, database):
+    p, _, steps, create = asset(api, server)
+    t, original = create(["/init", "/ok", "/fail"])
+    ids = [s["id"] for s in original["steps"]]
+    endpoint = t + "/groups"
+    response = api.post(endpoint, json={"name": "  回归组  ", "step_ids": ids[::-1]})
+    assert response.status_code == 201, response.text
+    group = response.json()
+    assert group["name"] == "回归组" and group["step_ids"] == ids[::-1]
+    g = endpoint + f"/{group['id']}"
+    assert api.get(g).json() == group
+    assert api.get(endpoint + "?name=回归&page_size=1").json()["total"] == 1
+    assert api.post(endpoint, json={"name": "回归组", "step_ids": []}).status_code == 409
+    assert api.post(endpoint, json={"name": "重复", "step_ids": [ids[0]] * 2}).status_code == 400
+    other, foreign = create(["/ok"])
+    assert (
+        api.post(
+            endpoint, json={"name": "跨任务", "step_ids": [foreign["steps"][0]["id"]]}
+        ).status_code
+        == 400
+    )
+    assert api.get(other + f"/groups/{group['id']}").status_code == 404
+    assert api.post(endpoint, json={"name": "共享", "step_ids": [ids[0]]}).status_code == 201
+    assert (
+        api.put(
+            g, json={"name": "修改组", "description": "备注", "step_ids": ids[::-1]}
+        ).status_code
+        == 200
+    )
+    copied = schema_check(api.post(t + "/copy", json={"name": "带组副本"}), "Task", 201)
+    copied_path = p + f"/tasks/{copied['id']}"
+    groups = api.get(copied_path + "/groups").json()["items"]
+    assert len(groups) == 2
+    copied_ids = [s["id"] for s in copied["steps"]]
+    assert next(g for g in groups if g["name"] == "修改组")["step_ids"] == copied_ids[::-1]
+    assert not set(copied_ids) & set(ids)
+    payload = {
+        "name": original["name"],
+        "base_url": server["url"],
+        "global_parameters": [],
+        "steps": [dict(steps["/init"], id=ids[0]), dict(steps["/fail"], id=ids[2])],
+    }
+    assert api.put(t, json=payload).status_code == 200
+    assert api.get(g).json()["step_ids"] == [ids[2], ids[0]]
+    with database() as db:
+        assert db.execute(
+            "SELECT position FROM task_group_steps WHERE group_id=%s ORDER BY position",
+            (group["id"],),
+        ).fetchall() == [(1,), (2,)]
+    assert api.delete(g).status_code == 400
+    deleted = api.delete(g + "?confirm=true")
+    assert deleted.status_code == 204 and deleted.content == b""
+    assert api.get(g).status_code == 404
+    assert len(api.get(t).json()["steps"]) == 2
+    assert api.delete(p + "?confirm=true").status_code == 200
+    with database() as db:
+        assert db.execute("SELECT count(*) FROM task_groups").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM task_group_steps").fetchone()[0] == 0
+
+
+def test_group_runs_order_history_and_failure(api, server):
+    _, _, _, create = asset(api, server)
+    t, original = create(["/init", "/ok", "/fail"])
+    ids = [s["id"] for s in original["steps"]]
+    g = api.post(t + "/groups", json={"name": "逆序子集", "step_ids": [ids[1], ids[0]]}).json()
+    endpoint = t + f"/groups/{g['id']}"
+    run = schema_check(api.post(endpoint + "/runs"), "Run", 202)
+    assert run["group_id"] == g["id"]
+    detail = wait_run(api, t, run["id"])
+    assert detail["run"]["status"] == "succeeded"
+    assert [c["path"] for c in server["calls"]] == ["/prefix/ok", "/prefix/init"]
+    assert [s["step_id"] for s in detail["steps"]] == [ids[1], ids[0]]
+    assert detail["config_snapshot"]["group"]["step_ids"] == [ids[1], ids[0]]
+    assert api.get(t + "/runs").json()["items"][0]["group_id"] == g["id"]
+    assert api.delete(endpoint + "?confirm=true").status_code == 204
+    assert api.get(t + f"/runs/{run['id']}").json() == detail
+    failing = api.post(
+        t + "/groups", json={"name": "失败跳过", "step_ids": [ids[2], ids[1]]}
+    ).json()
+    rid = api.post(t + f"/groups/{failing['id']}/runs").json()["id"]
+    failed = wait_run(api, t, rid)
+    assert [s["status"] for s in failed["steps"]] == ["failed", "skipped"]
+    assert len(server["calls"]) == 3
+    empty = api.post(t + "/groups", json={"name": "空组", "step_ids": []}).json()
+    assert api.post(t + f"/groups/{empty['id']}/runs").status_code == 400
+
+
+def test_group_run_mutual_exclusion(api, server):
+    _, _, _, create = asset(api, server)
+    t, original = create(["/slow", "/ok"])
+    ids = [s["id"] for s in original["steps"]]
+    group = api.post(t + "/groups", json={"name": "慢组", "step_ids": ids}).json()
+    g = t + f"/groups/{group['id']}"
+    other = api.post(t + "/groups", json={"name": "快组", "step_ids": [ids[1]]}).json()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: api.post(g + "/runs"), range(2)))
+    assert sorted(r.status_code for r in responses) == [202, 409]
+    run = next(r.json() for r in responses if r.status_code == 202)
+    assert server["entered"].wait(3)
+    assert api.post(t + "/runs").status_code == 409
+    assert api.post(t + f"/groups/{other['id']}/runs").status_code == 409
+    assert api.post(t + "/groups", json={"name": "新组", "step_ids": []}).status_code == 409
+    assert api.put(g, json={"name": "修改", "step_ids": []}).status_code == 409
+    assert api.delete(g + "?confirm=true").status_code == 409
+    assert api.delete(t + "?confirm=true").status_code == 409
+    server["release"].set()
+    assert wait_run(api, t, run["id"])["run"]["status"] == "succeeded"
+    task_run = schema_check(api.post(t + "/runs"), "Run", 202)
+    assert task_run["group_id"] is None
+    assert api.post(g + "/runs").status_code == 409
+    wait_run(api, t, task_run["id"])
+
+
+def test_group_parameter_dependencies_and_assertion(api, server, database):
+    _, _, steps, create = asset(api, server)
+    t, original = create(["/init", "/ok", "/fail"])
+    ids = [s["id"] for s in original["steps"]]
+    payload = {
+        "name": original["name"],
+        "base_url": server["url"],
+        "global_parameters": [
+            {
+                "name": "token",
+                "source_type": "rest",
+                "value_type": "string",
+                "sensitive": True,
+                "rest_source": {"step_id": ids[0], "extract_expression": "data.b"},
+            },
+            {
+                "name": "unused",
+                "source_type": "rest",
+                "value_type": "integer",
+                "rest_source": {"step_id": ids[2], "extract_expression": "data.missing"},
+            },
+        ],
+        "steps": [
+            dict(steps["/init"], id=ids[0]),
+            dict(
+                steps["/ok"],
+                id=ids[1],
+                bindings=[
+                    {
+                        "location": "header",
+                        "name": "Authorization",
+                        "binding": {"kind": "global", "parameter_name": "token"},
+                    }
+                ],
+                assertion_code='def assert_response(responseBody, globalParam):\n    return globalParam["token"] == "PRIVATE_TOKEN"',
+            ),
+            dict(steps["/fail"], id=ids[2]),
+        ],
+    }
+    assert api.put(t, json=payload).status_code == 200
+    for name, members in [("缺源", [ids[1]]), ("逆序", [ids[1], ids[0]])]:
+        group = api.post(t + "/groups", json={"name": name, "step_ids": members}).json()
+        assert api.post(t + f"/groups/{group['id']}/runs").status_code == 400
+    with database() as db:
+        assert db.execute("SELECT count(*) FROM task_runs").fetchone()[0] == 0
+    assert not server["calls"]
+    group = api.post(t + "/groups", json={"name": "参数组", "step_ids": ids[:2]}).json()
+    run = api.post(t + f"/groups/{group['id']}/runs")
+    assert run.status_code == 202, run.text
+    detail = wait_run(api, t, run.json()["id"])
+    assert detail["run"]["status"] == "succeeded"
+    assert [p["name"] for p in detail["global_parameters"]] == ["token"]
+    assert len(server["calls"]) == 2
+    assert "PRIVATE_TOKEN" not in json.dumps(detail["global_parameters"])
+    requests = api.get(t + f"/runs/{run.json()['id']}/requests").json()
+    assert "PRIVATE_TOKEN" not in json.dumps(requests)

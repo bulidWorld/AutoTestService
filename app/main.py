@@ -27,7 +27,7 @@ def create_app(contract_path=None):
     async def lifespan(app):
         dispatcher = Dispatcher()
         app.state.task_dispatcher = dispatcher
-        if any(route.name == "startTaskRun" for route in app.routes):
+        if any(route.name in {"startTaskRun", "startTaskGroupRun"} for route in app.routes):
             dispatcher.start()
         try:
             yield
@@ -40,6 +40,7 @@ def create_app(contract_path=None):
         contract_directory = absolute(settings["contract"]).parent
         register_contract(application, contract_directory / "rest-task.yaml")
         register_contract(application, contract_directory / "rest-parameter.yaml")
+        register_contract(application, contract_directory / "rest-group.yaml")
 
     application.mount("/static", StaticFiles(directory=absolute("app/static")), name="static")
 

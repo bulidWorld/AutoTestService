@@ -4,10 +4,11 @@ Example: docs/ rest-api/rest-project.yaml -> app/repository/rest_project.py.
 Operation IDs inside that YAML map to same-named functions in the module.
 """
 
-from app.repository import rest_parameter, rest_project, rest_task
+from app.repository import rest_group, rest_parameter, rest_project, rest_task
 
 CONTRACT_IMPLEMENTATIONS = {
     "rest-project": rest_project,
+    "rest-group": rest_group,
     "rest-task": rest_task,
     "rest-parameter": rest_parameter,
 }

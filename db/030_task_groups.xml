@@ -1,0 +1,43 @@
+<?xml version='1.0' encoding='utf-8'?>
+<database name="auto_test_service" dialect="postgresql" source="docs/ rest-api/rest-group.yaml">
+  <tables>
+    <table name="task_groups" comment="任务内步骤组；名称唯一、成员归属及顺序由程序校验；无外键" if-not-exists="true">
+      <columns>
+        <column name="id" type="integer" comment="稳定组 ID" nullable="false" identity="true" />
+        <column name="task_id" type="integer" comment="所属任务 ID" nullable="false" />
+        <column name="name" type="varchar(120)" comment="去除首尾空白后任务内唯一组名" nullable="false" />
+        <column name="description" type="varchar(2000)" comment="组描述" nullable="false" default="''" />
+        <column name="created_at" type="timestamptz" comment="创建时间" nullable="false" default="now()" />
+        <column name="updated_at" type="timestamptz" comment="更新时间" nullable="false" default="now()" />
+      </columns>
+      <constraints>
+        <primary-key name="pk_task_groups" columns="id" />
+      </constraints>
+      <indexes>
+        <index name="ix_task_groups_task_name" if-not-exists="true">
+          <column name="task_id" />
+          <column name="name" />
+        </index>
+      </indexes>
+    </table>
+    <table name="task_group_steps" comment="组与步骤多对多关系；同组步骤不得重复；步骤必须属于组所在任务；position 从 1 连续递增" if-not-exists="true">
+      <columns>
+        <column name="group_id" type="integer" comment="所属组 ID" nullable="false" />
+        <column name="step_id" type="integer" comment="本任务 task_steps.id" nullable="false" />
+        <column name="position" type="integer" comment="组内执行序号，由 step_ids 数组顺序确定" nullable="false" />
+      </columns>
+      <constraints>
+        <primary-key name="pk_task_group_steps" columns="group_id,step_id" />
+      </constraints>
+      <indexes>
+        <index name="ix_task_group_steps_group_position" if-not-exists="true">
+          <column name="group_id" />
+          <column name="position" />
+        </index>
+        <index name="ix_task_group_steps_step" if-not-exists="true">
+          <column name="step_id" />
+        </index>
+      </indexes>
+    </table>
+  </tables>
+</database>
