@@ -2,7 +2,7 @@
 openapi: 3.0.3
 info:
   title: AutoTestService Task API
-  version: 0.3.0
+  version: 0.4.0
   description: 阶段二任务编排与基础执行契约；依赖 rest-project.yaml 的项目及接口资产。字段取值、关联、唯一性及状态约束由业务校验。保存和运行前进行校验；仅支持全局
     REST 参数响应提取，无步骤响应提取、实时推送、重试或并行步骤。敏感数据在页面、API 及日志脱敏。
 paths:
@@ -380,8 +380,8 @@ paths:
       summary: 运行任务
       description: 先静态校验配置、step_id 本任务归属、参数依赖及提取表达式；失败 400，不发请求。锁定任务行，queued/running
         存在则 409；事务保存不可变配置快照、运行步骤及参数结果，返回 202。先初始化 fixed 参数，再按步骤序号发送请求；每步完成后执行绑定表达式并赋值全局参数，后续步骤只能引用已赋值的参数。同一步骤只请求一次，多个参数共享响应。
-        无并行、重试或自动重定向。每步发送前提交请求记录，发送后保存响应；HTTP
-        2xx 才成功。HTTP 错误、连接失败、超时、非 JSON、字段缺失、null 或提取类型错误导致运行失败，未执行参数及步骤跳过；提取失败同时将源运行步骤标记
+        无并行、重试或自动重定向。每步发送前提交请求记录，发送后保存响应；未设置 assertion_code 时按 HTTP 2xx 判断，设置时在当前步骤参数提取前调用业务断言，以 boolean 返回值替代状态码判定。
+        未设置断言时的 HTTP 错误、断言失败或执行异常或非布尔返回值、连接失败、超时、断言或参数提取所需响应非 JSON、字段缺失、null 或提取类型错误导致运行失败，未执行参数及步骤跳过；断言或提取失败同时将源运行步骤标记
         failed。不同任务独立运行，关闭页面不终止执行。重启将未结束运行和正在执行的参数/步骤标记 EXECUTION_INTERRUPTED，未执行项跳过，不续跑。地址前缀正确拼接，path/query
         编码，query 数组重复键，对象 query 拒绝，JSON 保留结构。当前阶段无需认证。
       parameters:
@@ -651,6 +651,22 @@ components:
       required:
       - location
       - reason
+    BusinessAssertionCode:
+      type: string
+      nullable: true
+      description: |
+        可选的业务成功断言完整代码，包含方法名和函数定义，入口格式为 def assert(responseBody, globalParam):，必须返回 boolean（true/false，示例代码使用 True/False）。
+        省略、null、空字符串或仅空白表示未设置；完整保存时未设置即清除原有断言，按 HTTP 200～299 判断请求成功。
+        设置后，在响应完整读取后、当前步骤的 REST 参数提取前调用断言，以其返回值替代 HTTP 状态码成功判定；非 2xx 响应也执行断言。
+        responseBody 为 JSON 解析后的响应体，支持对象、数组和 JSON 标量；无法解析时以 RESPONSE_NOT_JSON 失败，不调用断言。
+        globalParam 为参数名称到运行值的映射，只包含当前步骤执行前已成功赋值的全局参数，不包含当前或后续步骤尚未提取的参数。
+        返回 True 表示业务断言通过，False 以 ASSERTION_FAILED 失败；执行异常以 ASSERTION_EXECUTION_ERROR 失败，非布尔返回值以 ASSERTION_RETURN_TYPE_ERROR 失败。
+        连接失败或超时仍直接失败，不调用断言；断言通过后仍须完成该步骤关联的参数提取，提取失败则步骤失败。
+        保存和运行前静态校验完整函数定义及入口签名，不执行断言；无效配置返回 400，issues 定位 steps 数组对应项的 assertion_code。
+        assert 为 Python 保留字；此处为约定的断言入口格式，执行器须适配该入口，不得直接作为标准 Python 函数定义执行。
+      example: |
+        def assert(responseBody, globalParam):
+            return responseBody.get("code") == 0 and responseBody.get("data", {}).get("id") == globalParam["expected_id"]
     StepInput:
       type: object
       description: 步骤配置；数组顺序决定执行顺序，id 存在时保留稳定 ID，新增或复制步骤省略 id。interface_id/file_id/version
@@ -682,6 +698,8 @@ components:
           description: 显式绑定版本
           example: 1
           minimum: 1
+        assertion_code:
+          $ref: '#/components/schemas/BusinessAssertionCode'
         bindings:
           type: array
           description: 参数、认证 header 和 JSON 字段绑定；可选字段未配置则不发送。
@@ -698,6 +716,7 @@ components:
         file_id: 1
         version: 1
         bindings: []
+        assertion_code: null
       additionalProperties: false
     Step:
       type: object
@@ -729,6 +748,8 @@ components:
           description: 显式绑定版本
           example: 1
           minimum: 1
+        assertion_code:
+          $ref: '#/components/schemas/BusinessAssertionCode'
         bindings:
           type: array
           description: 脱敏后的字段绑定。
@@ -787,6 +808,7 @@ components:
         file_id: 1
         version: 1
         bindings: []
+        assertion_code: null
         position: 1
         file_name: 订单接口
         current_version: 2
@@ -796,7 +818,7 @@ components:
         execution_phase: steps
     TaskWrite:
       type: object
-      description: 原子保存完整任务配置，参数及步骤数组决定各自顺序。REST 来源使用稳定 step_id 或本次提交 steps 数组下标 step_index（从 0 开始）二选一，复用步骤的接口版本与绑定。新步骤与参数可一起提交，保存时转换为稳定 step_id；复制任务时重建全部步骤 ID 并映射参数引用。所有步骤按步骤数组顺序执行一次，每步完成后提取其绑定参数。参数引用的初始化步骤只能使用该步骤首次执行前已初始化的全局参数，拒绝自身、后序依赖及循环；同一步骤可供多个参数提取同一次响应，不重新请求。绑定失败或提取失败导致运行失败；静态校验不发请求。删除被引用步骤必须同时解除或改绑引用。至少有一个步骤才允许运行；全部请求及表达式赋值成功则运行成功。
+      description: 原子保存完整任务配置，参数及步骤数组决定各自顺序。REST 来源使用稳定 step_id 或本次提交 steps 数组下标 step_index（从 0 开始）二选一，复用步骤的接口版本与绑定。新步骤与参数可一起提交，保存时转换为稳定 step_id；复制任务时重建全部步骤 ID 并映射参数引用。所有步骤按步骤数组顺序执行一次，每步完成后提取其绑定参数。参数引用的初始化步骤只能使用该步骤首次执行前已初始化的全局参数，拒绝自身、后序依赖及循环；同一步骤可供多个参数提取同一次响应，不重新请求。步骤可配置 assertion_code 完整业务断言，复制和运行快照保留断言代码；未设置时按 HTTP 2xx 判断，设置时以断言 boolean 返回值判断。绑定失败、断言失败或提取失败导致运行失败；静态校验不发请求。删除被引用步骤必须同时解除或改绑引用。至少有一个步骤才允许运行；全部步骤成功判定通过且表达式赋值成功则运行成功。
       properties:
         name:
           type: string
@@ -1068,7 +1090,7 @@ components:
       additionalProperties: false
     Run:
       type: object
-      description: 运行摘要。HTTP 2xx 成功；其他状态、连接失败、超时失败，后续步骤跳过。
+      description: 运行摘要。步骤未设置断言时按 HTTP 2xx 判断，设置时按业务断言 boolean 返回值判断；连接失败、超时、断言或参数提取失败均导致运行失败，后续步骤跳过。
       properties:
         id:
           type: integer
@@ -1127,7 +1149,7 @@ components:
           minimum: 0
         error_code:
           type: string
-          description: 错误分类：HTTP_STATUS_ERROR、CONNECTION_ERROR、TIMEOUT、RESPONSE_NOT_JSON、EXTRACTION_NOT_FOUND、EXTRACTION_TYPE_ERROR、EXECUTION_INTERRUPTED。
+          description: 错误分类：HTTP_STATUS_ERROR、CONNECTION_ERROR、TIMEOUT、RESPONSE_NOT_JSON、EXTRACTION_NOT_FOUND、EXTRACTION_TYPE_ERROR、ASSERTION_FAILED、ASSERTION_EXECUTION_ERROR、ASSERTION_RETURN_TYPE_ERROR、EXECUTION_INTERRUPTED。
           example: null
           nullable: true
         error_message:
@@ -1159,7 +1181,7 @@ components:
         error_message: null
     RunStep:
       type: object
-      description: 运行步骤结果；每步最多请求一次；跳过步骤没有请求记录。
+      description: 运行步骤结果；每步最多请求一次；跳过步骤没有请求记录。succeeded 表示 HTTP 状态码或业务断言判定通过，且关联参数均提取成功；断言执行期间保持 running。
       properties:
         id:
           type: integer
@@ -1218,7 +1240,7 @@ components:
           minimum: 0
         error_code:
           type: string
-          description: 错误分类；服务重启遗留运行标记 EXECUTION_INTERRUPTED
+          description: 错误分类；断言返回 False 为 ASSERTION_FAILED，执行异常为 ASSERTION_EXECUTION_ERROR，非布尔返回值为 ASSERTION_RETURN_TYPE_ERROR；服务重启遗留运行标记 EXECUTION_INTERRUPTED
           example: null
           nullable: true
         error_message:
@@ -1312,7 +1334,7 @@ components:
       description: 运行详情，通过手动刷新查询。
       properties:
         run:
-          description: 运行摘要。HTTP 2xx 成功；其他状态、连接失败、超时失败，后续步骤跳过。
+          description: 运行摘要。步骤未设置断言时按 HTTP 2xx 判断，设置时按业务断言 boolean 返回值判断；连接失败、超时、断言或参数提取失败均导致运行失败，后续步骤跳过。
           example:
             id: 1
             task_id: 1
@@ -1507,7 +1529,7 @@ components:
           minimum: 0
         error_code:
           type: string
-          description: 错误分类；服务重启遗留运行标记 EXECUTION_INTERRUPTED
+          description: 错误分类；断言返回 False 为 ASSERTION_FAILED，执行异常为 ASSERTION_EXECUTION_ERROR，非布尔返回值为 ASSERTION_RETURN_TYPE_ERROR；服务重启遗留运行标记 EXECUTION_INTERRUPTED
           example: null
           nullable: true
         error_message:
