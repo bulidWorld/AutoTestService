@@ -1,4 +1,4 @@
-"""Explicit operation handlers for docs/rest-task.yaml."""
+"""Explicit operation handlers for docs/ rest-api/rest-task.yaml."""
 
 import base64
 import copy
@@ -215,15 +215,16 @@ def save(repository, path, body, creating=False):
             s["file_id"],
             s["version"],
             Jsonb(s["bindings"]),
+            s.get("assertion_code"),
         )
         if s["id"] < 0:
             s["id"] = repository.one(
-                "INSERT INTO task_steps(task_id,position,interface_id,file_id,version,bindings) VALUES(%s,%s,%s,%s,%s,%s) RETURNING id",
+                "INSERT INTO task_steps(task_id,position,interface_id,file_id,version,bindings,assertion_code) VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                 values,
             )["id"]
         else:
             repository.db.execute(
-                "UPDATE task_steps SET task_id=%s,position=%s,interface_id=%s,file_id=%s,version=%s,bindings=%s,updated_at=now() WHERE id=%s",
+                "UPDATE task_steps SET task_id=%s,position=%s,interface_id=%s,file_id=%s,version=%s,bindings=%s,assertion_code=%s,updated_at=now() WHERE id=%s",
                 (*values, s["id"]),
             )
         step_ids[original_id] = s["id"]
@@ -275,6 +276,32 @@ def listTasks(repository, path, query, body, upload):
     )
 
 
+def importTask(repository, path, query, body, upload):
+    from app.service.task_import import convert
+
+    repository.project(path["project_id"], lock=True)
+
+    def lookup(method, interface_path):
+        rows = repository.db.execute(
+            "SELECT i.* FROM api_interfaces i JOIN yaml_files f ON f.id=i.file_id "
+            "WHERE f.project_id=%s AND i.version=f.current_version AND i.method=%s AND i.path=%s",
+            (path["project_id"], method, interface_path),
+        ).fetchall()
+        if len(rows) != 1:
+            invalid("XML 接口不存在或匹配多个文件的当前版本", "body.file")
+        interface = rows[0]
+        version = required(
+            repository.one(
+                "SELECT parsed_document FROM yaml_versions WHERE file_id=%s AND version=%s",
+                (interface["file_id"], interface["version"]),
+            )
+        )
+        return interface, version["parsed_document"]
+
+    config = convert(upload, body["base_url"], lookup)
+    return save(repository, path, config, creating=True)
+
+
 def createTask(repository, path, query, body, upload):
     return save(repository, path, body, True)
 
@@ -304,7 +331,7 @@ def copyTask(repository, path, query, body, upload):
     mapping = {}
     for step in original["steps"]:
         inserted = repository.one(
-            "INSERT INTO task_steps(task_id,position,interface_id,file_id,version,bindings) VALUES(%s,%s,%s,%s,%s,%s) RETURNING id",
+            "INSERT INTO task_steps(task_id,position,interface_id,file_id,version,bindings,assertion_code) VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id",
             (
                 row["id"],
                 step["position"],
@@ -312,6 +339,7 @@ def copyTask(repository, path, query, body, upload):
                 step["file_id"],
                 step["version"],
                 Jsonb(step["bindings"]),
+                step.get("assertion_code"),
             ),
         )
         mapping[step["id"]] = inserted["id"]
@@ -584,6 +612,7 @@ OPERATIONS = {
     for f in [
         listTasks,
         createTask,
+        importTask,
         getTask,
         updateTask,
         copyTask,

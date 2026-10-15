@@ -8,6 +8,7 @@ from urllib.parse import quote, urlencode, urlsplit
 
 from jsonschema import Draft4Validator
 
+from app.service.assertions import validate_assertion
 from app.service.errors import BusinessError, invalid
 
 TYPES = {
@@ -313,6 +314,12 @@ def stringify(value):
 
 
 def validate_config(task, run=False):
+    for index, step in enumerate(task["steps"]):
+        code = validate_assertion(
+            step.get("assertion_code"), f"body.steps.{index}.assertion_code"
+        )
+        if "assertion_code" in step:
+            step["assertion_code"] = code
     try:
         parsed = urlsplit(task["base_url"])
         valid_port = parsed.port is None or 1 <= parsed.port <= 65535

@@ -96,7 +96,7 @@ def test_extract_type_mismatch(client, value):
 
 
 def test_split_contracts_are_bundled_and_routes_registered(client):
-    for path in (ROOT / "docs").glob("rest-*.yaml"):
+    for path in (ROOT / "docs/ rest-api").glob("rest-*.yaml"):
         document = load_contract(path)
         validate(document)
         assert ".yaml#/components/" not in json.dumps(document)

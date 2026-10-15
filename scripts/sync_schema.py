@@ -185,7 +185,7 @@ def main():
             # Existing columns are intentionally retained. XML synchronization
             # only adds missing columns and never deletes user/data columns.
         # Reinsert restored tables in declaration order and add missing columns
-        # before foreign keys or other statements that depend on them.
+        # before column comments, foreign keys or other dependent statements.
         pending_by_id = dict(pending)
         column_additions = [(i, s) for i, s in pending if i.startswith("column-add-")]
         ordered = []
@@ -196,7 +196,7 @@ def main():
             for node in ET.parse(path).getroot().findall("./statements/statement")
         }
         for ident, sql in statements:
-            if "-foreign-key-" in ident or ident in raw_statement_ids:
+            if "-comment-column-" in ident or "-foreign-key-" in ident or ident in raw_statement_ids:
                 if not additions_inserted:
                     ordered.extend(column_additions)
                     additions_inserted = True

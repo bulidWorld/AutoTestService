@@ -6,7 +6,7 @@ import logging
 from fastapi import Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from jsonschema import Draft4Validator
+from openapi_schema_validator import OAS30Validator
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException
@@ -26,7 +26,7 @@ def error_response(request, error):
 
 
 def validate_value(value, schema, specification, location):
-    validator = Draft4Validator(specification).evolve(schema=schema)
+    validator = OAS30Validator(specification).evolve(schema=schema)
     error = next(validator.iter_errors(value), None)
     if error:
         suffix = "".join("." + str(p) for p in error.path)
@@ -97,11 +97,16 @@ def bind(operation, specification, handler, database_free=False):
                             invalid("上传字段不得重复", "body")
                         file = form.get("file")
                         if not isinstance(file, UploadFile):
-                            invalid("必须上传 YAML 文件", "body.file")
+                            invalid("必须上传文件", "body.file")
                         body = {k: v.strip() if isinstance(v, str) else "" for k, v in form.items()}
                         validate_value(body, schema, specification, "body")
+                        parser = parse_upload
+                        if operation["operationId"] == "importTask":
+                            from app.service.task_import import parse_upload as parse_task_upload
+
+                            parser = parse_task_upload
                         upload = await run_in_threadpool(
-                            parse_upload, file.filename, await file.read(MAX_BYTES + 1)
+                            parser, file.filename, await file.read(MAX_BYTES + 1)
                         )
             if database_free:
                 result = await run_in_threadpool(handler, None, path, query, body, upload)

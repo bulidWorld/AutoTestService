@@ -1,6 +1,6 @@
 """One API YAML file maps to one Python implementation module.
 
-Example: docs/rest-project.yaml -> app/repository/rest_project.py.
+Example: docs/ rest-api/rest-project.yaml -> app/repository/rest_project.py.
 Operation IDs inside that YAML map to same-named functions in the module.
 """
 

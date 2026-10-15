@@ -24,7 +24,7 @@ from app.repository.database import connect
 from app.service.errors import BusinessError
 from app.service.task_config import build_request, extract, validate_config
 
-SPEC = load_contract(ROOT / "docs/rest-task.yaml")
+SPEC = load_contract(ROOT / "docs/ rest-api/rest-task.yaml")
 
 
 def schema_check(response, name, status=200):
@@ -34,7 +34,7 @@ def schema_check(response, name, status=200):
     specification = (
         SPEC
         if name in SPEC["components"]["schemas"]
-        else load_contract(ROOT / "docs/rest-parameter.yaml")
+        else load_contract(ROOT / "docs/ rest-api/rest-parameter.yaml")
     )
     OAS30Validator(
         specification["components"]["schemas"][name],
@@ -1006,3 +1006,180 @@ def test_task_source_write_contract(source, valid):
         ],
     }
     assert validator.is_valid(payload) == valid
+
+
+def test_assertion_save_copy_clear_and_snapshot(api, server, database):
+    _, _, steps, create = asset(api, server)
+    t, created = create(["/init", "/ok"])
+    first, second = created["steps"]
+    code = (
+        "def assert_response(responseBody, globalParam):\n"
+        '    return responseBody["data"]["a"] > globalParam["T1"]\n'
+    )
+    payload = {
+        "name": created["name"],
+        "base_url": server["url"],
+        "global_parameters": [
+            {
+                "name": "T1",
+                "value_type": "integer",
+                "source_type": "rest",
+                "rest_source": {"step_id": first["id"], "extract_expression": "data.a"},
+            }
+        ],
+        "steps": [
+            dict(steps["/init"], id=first["id"], assertion_code=None),
+            dict(steps["/ok"], id=second["id"], assertion_code=code),
+        ],
+    }
+    updated = schema_check(api.put(t, json=payload), "Task")
+    assert [s["assertion_code"] for s in updated["steps"]] == [None, code]
+    copied = schema_check(api.post(t + "/copy", json={"name": "assertion copy"}), "Task", 201)
+    assert copied["steps"][1]["assertion_code"] == code
+    assert copied["steps"][1]["id"] != second["id"]
+    rid = schema_check(api.post(t + "/runs"), "Run", 202)["id"]
+    result = wait_run(api, t, rid)
+    assert result["run"]["status"] == "succeeded"
+    assert result["config_snapshot"]["task"]["steps"][1]["assertion_code"] == code
+    assert len(server["calls"]) == 2
+    for empty in ("", " \n", None):
+        payload["steps"][1]["assertion_code"] = empty
+        assert schema_check(api.put(t, json=payload), "Task")["steps"][1]["assertion_code"] is None
+    payload["steps"][1]["assertion_code"] = code
+    assert api.put(t, json=payload).status_code == 200
+    del payload["steps"][1]["assertion_code"]
+    assert schema_check(api.put(t, json=payload), "Task")["steps"][1]["assertion_code"] is None
+    history = schema_check(api.get(t + f"/runs/{rid}"), "RunDetail")
+    assert history["config_snapshot"]["task"]["steps"][1]["assertion_code"] == code
+    bad = copy.deepcopy(payload)
+    bad["steps"][1]["assertion_code"] = "def assert(responseBody, globalParam):\n    return True"
+    rejected = schema_check(api.put(t, json=bad), "Error", 400)
+    assert rejected["issues"][0]["location"] == "body.steps.1.assertion_code"
+    assert len(server["calls"]) == 2
+    # Run validation also catches invalid stored code without making HTTP requests.
+    with database() as db:
+        db.execute(
+            "UPDATE task_steps SET assertion_code=%s WHERE id=%s",
+            (bad["steps"][1]["assertion_code"], second["id"]),
+        )
+    rejected = schema_check(api.post(t + "/runs"), "Error", 400)
+    assert rejected["issues"][0]["location"] == "body.steps.1.assertion_code"
+    assert len(server["calls"]) == 2
+
+
+@pytest.mark.parametrize(
+    "path,statement,error",
+    [
+        ("/fail", "return True", None),
+        ("/ok", "return False", "ASSERTION_FAILED"),
+        ("/ok", "return 1", "ASSERTION_RETURN_TYPE_ERROR"),
+        ("/ok", 'raise ValueError("PRIVATE_ASSERTION_SECRET")', "ASSERTION_EXECUTION_ERROR"),
+        ("/not-json", "return True", "RESPONSE_NOT_JSON"),
+        ("/init", 'return "T1" in globalParam', "ASSERTION_FAILED"),
+    ],
+)
+def test_assertion_run_verdict_and_extraction_order(api, server, path, statement, error):
+    _, _, steps, create = asset(api, server)
+    t, created = create([path, "/ok"])
+    payload = {
+        "name": created["name"],
+        "base_url": server["url"],
+        "global_parameters": [
+            {
+                "name": "T1",
+                "value_type": "integer",
+                "source_type": "rest",
+                "rest_source": {
+                    "step_id": created["steps"][0]["id"],
+                    "extract_expression": "data.a",
+                },
+            }
+        ],
+        "steps": [
+            dict(
+                steps[path],
+                id=created["steps"][0]["id"],
+                assertion_code=(
+                    "def assert_response(responseBody, globalParam):\n    " + statement
+                ),
+            ),
+            dict(steps["/ok"], id=created["steps"][1]["id"]),
+        ],
+    }
+    assert api.put(t, json=payload).status_code == 200
+    rid = api.post(t + "/runs").json()["id"]
+    result = wait_run(api, t, rid)
+    assert result["run"]["error_code"] == error
+    assert [s["status"] for s in result["steps"]] == (
+        ["failed", "skipped"] if error else ["succeeded", "succeeded"]
+    )
+    requests = schema_check(api.get(t + f"/runs/{rid}/requests"), "RequestPage")["items"]
+    assert requests[0]["error_code"] == error
+    assert len(server["calls"]) == (1 if error else 2)
+    assert result["global_parameters"][0]["status"] == ("skipped" if error else "succeeded")
+    assert "PRIVATE_ASSERTION_SECRET" not in json.dumps(result["run"])
+    assert "PRIVATE_ASSERTION_SECRET" not in json.dumps(requests)
+
+
+def test_assertion_preview_and_extraction_failure(api, server):
+    _, _, steps, create = asset(api, server)
+    t, created = create(["/fail"])
+    step = dict(
+        steps["/fail"],
+        id=created["steps"][0]["id"],
+        assertion_code=("def assert_response(responseBody, globalParam):\n    return True"),
+    )
+    parameter = {
+        "name": "T1",
+        "value_type": "integer",
+        "source_type": "rest",
+        "rest_source": {"step_id": step["id"], "extract_expression": "data.a"},
+    }
+    payload = {
+        "name": created["name"],
+        "base_url": server["url"],
+        "global_parameters": [parameter],
+        "steps": [step],
+    }
+    assert api.put(t, json=payload).status_code == 200
+    preview = {k: v for k, v in payload.items() if k != "name"}
+    preview["parameter_name"] = "T1"
+    assert (
+        schema_check(api.post(t + "/parameters/preview", json=preview), "PreviewParameterResult")[
+            "value"
+        ]
+        == 1
+    )
+    step["assertion_code"] = "def assert_response(responseBody, globalParam):\n    return False"
+    rejected = schema_check(api.post(t + "/parameters/preview", json=preview), "Error", 422)
+    assert rejected["code"] == "ASSERTION_FAILED"
+    step["assertion_code"] = "def assert_response(responseBody, globalParam):\n    return True"
+    parameter["rest_source"]["extract_expression"] = "data.missing"
+    assert api.put(t, json=payload).status_code == 200
+    rid = api.post(t + "/runs").json()["id"]
+    result = wait_run(api, t, rid)
+    assert result["run"]["error_code"] == "EXTRACTION_NOT_FOUND"
+    assert result["steps"][0]["status"] == "failed"
+    assert result["global_parameters"][0]["status"] == "failed"
+    assert len(server["calls"]) == 3
+
+
+def test_xml_task_import_atomic(api, server):
+    p, _, _, _ = asset(api, server)
+    endpoint = p + "/tasks/import"
+    xml = b"""<task name="xml-task"><taskStep order="2"><rest method="GET" path="/ok"/></taskStep><taskStep order="1"><rest method="GET" path="/init"><extractParam valueType="integer"><name>id</name><value>data.id</value></extractParam></rest></taskStep></task>"""
+
+    def upload(content):
+        return api.post(
+            endpoint,
+            data={"base_url": server["url"]},
+            files={"file": ("task.xml", content, "application/xml")},
+        )
+
+    created = schema_check(upload(xml), "Task", 201)
+    assert [s["path"] for s in created["steps"]] == ["/init", "/ok"]
+    assert created["global_parameters"][0]["rest_source"]["step_id"] == created["steps"][0]["id"]
+    assert upload(xml).status_code == 409
+    invalid_xml = xml.replace(b"xml-task", b"bad-task").replace(b"/ok", b"/unknown")
+    assert upload(invalid_xml).status_code == 400
+    assert api.get(p + "/tasks", params={"name": "bad-task"}).json()["total"] == 0

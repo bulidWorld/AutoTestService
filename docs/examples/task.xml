@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 项目须先导入 GET /init 和 GET /orders/{id} 的 OpenAPI 定义。 -->
+<task name="订单查询">
+  <parameters>
+    <parameter type="fixed"><name>client</name><value>demo</value></parameter>
+  </parameters>
+  <taskStep order="1">
+    <rest method="GET" path="/init">
+      <header><name>X-Client</name><value>{client}</value></header>
+      <assertionCode><![CDATA[
+def assert_response(responseBody, globalParam):
+    return responseBody["data"][0]["id"] > 0
+]]></assertionCode>
+      <extractParam valueType="integer"><name>id</name><value>data[0].id</value></extractParam>
+    </rest>
+  </taskStep>
+  <taskStep order="2">
+    <rest method="GET" path="/orders/{id}">
+      <body><kv location="path"><parameter>id</parameter></kv></body>
+    </rest>
+  </taskStep>
+</task>

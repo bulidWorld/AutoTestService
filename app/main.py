@@ -37,8 +37,9 @@ def create_app(contract_path=None):
     application = FastAPI(title="AutoTestService", lifespan=lifespan)
     register_contract(application, absolute(contract_path or settings["contract"]))
     if contract_path is None and absolute(settings["contract"]).name == "rest-project.yaml":
-        register_contract(application, absolute("docs/rest-task.yaml"))
-        register_contract(application, absolute("docs/rest-parameter.yaml"))
+        contract_directory = absolute(settings["contract"]).parent
+        register_contract(application, contract_directory / "rest-task.yaml")
+        register_contract(application, contract_directory / "rest-parameter.yaml")
 
     application.mount("/static", StaticFiles(directory=absolute("app/static")), name="static")
 

@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from app.service.assertions import evaluate_assertion
 from app.service.errors import BusinessError
 from app.service.task_config import build_request, execution_plan, extract, scrub, sensitive_values
 
@@ -110,6 +111,28 @@ def response_json(response, location):
         raise BusinessError(422, "RESPONSE_NOT_JSON", "初始化响应不是有效 JSON", location) from None
 
 
+def apply_assertion(step, response, values):
+    """Replace the HTTP verdict only after a complete response, before extraction."""
+    code = step.get("assertion_code")
+    if not code or not code.strip() or response["error_code"] not in (None, "HTTP_STATUS_ERROR"):
+        return response
+    judged = dict(response, error_code=None, error_message=None)
+    try:
+        body = response_json(judged, "assertion_code")
+    except BusinessError:
+        error = "RESPONSE_NOT_JSON"
+    else:
+        error = evaluate_assertion(code, body, values)
+    messages = {
+        "RESPONSE_NOT_JSON": "断言响应不是有效 JSON",
+        "ASSERTION_FAILED": "业务断言未通过",
+        "ASSERTION_EXECUTION_ERROR": "业务断言执行异常或超过资源限制",
+        "ASSERTION_RETURN_TYPE_ERROR": "业务断言必须返回 boolean",
+    }
+    judged.update(error_code=error, error_message=messages.get(error))
+    return judged
+
+
 def preview(config, name):
     values, responses = {}, {}
     target = next((p for p in config["global_parameters"] if p["name"] == name), None)
@@ -121,6 +144,7 @@ def preview(config, name):
         if kind == "step":
             request = build_request(config, p, values=values)
             response = request_http(request, config.get("timeout_seconds", 30))
+            response = apply_assertion(p, response, values)
             responses[p["id"]] = response
             if response["error_code"]:
                 raise BusinessError(422, response["error_code"], response["error_message"])
@@ -204,7 +228,10 @@ class RunExecutor:
                 ),
             ).fetchone()
         # Request record and running state are committed before any network bytes are sent.
+        step_started = time.monotonic()
         response = request_http(request, config["timeout_seconds"])
+        response = apply_assertion(step, response, self.values)
+        step_duration_ms = max(0, int((time.monotonic() - step_started) * 1000))
         with connection() as db:
             db.execute(
                 "UPDATE task_requests SET response_status=%s,response_headers=%s,response_body=%s,response_body_encoding=%s,error_code=%s,error_message=%s,finished_at=now(),duration_ms=%s WHERE id=%s",
@@ -225,7 +252,7 @@ class RunExecutor:
                 "UPDATE task_run_steps SET status=%s,finished_at=now(),duration_ms=%s,error_code=%s,error_message=%s WHERE id=%s",
                 (
                     "failed" if response["error_code"] else "succeeded",
-                    request["duration_ms"],
+                    step_duration_ms,
                     response["error_code"],
                     response["error_message"],
                     result["id"],

@@ -4,7 +4,7 @@ service:
   port: 31010
   startup_timeout: 20
   stop_timeout: 30
-contract: docs/rest-project.yaml
+contract: docs/ rest-api/rest-project.yaml
 logging:
   level: INFO
   directory: /var/service/log/auto-test-service

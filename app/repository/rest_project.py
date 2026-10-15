@@ -1,4 +1,4 @@
-"""Implementation of docs/rest-project.yaml.
+"""Implementation of docs/ rest-api/rest-project.yaml.
 
 Each operationId has a same-named function in this module. Route registration
 binds these functions directly; search for `def <operationId>` to find the logic.

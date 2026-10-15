@@ -19,7 +19,7 @@ database = task_helpers.database
 server = task_helpers.server
 asset = task_helpers.asset
 
-SPEC = load_contract(ROOT / "docs/rest-project.yaml")
+SPEC = load_contract(ROOT / "docs/ rest-api/rest-project.yaml")
 
 
 def check(response, status=200, name="InterfaceTestResult"):

@@ -58,6 +58,7 @@
         <column name="file_id" type="integer" comment="绑定的逻辑文件 ID" nullable="false" />
         <column name="version" type="integer" comment="显式选择的 YAML 版本，更新不自动切换" nullable="false" />
         <column name="bindings" type="jsonb" comment="结构化绑定数组：location/name/binding；JSON 字段用 JSON Pointer，body 根用空字符串" nullable="false" default="'[]'::jsonb" />
+        <column name="assertion_code" type="text" comment="可选 Python 业务断言，入口 assert_response(responseBody, globalParam)，空值按 HTTP 2xx 判断" nullable="true" />
         <column name="created_at" type="timestamptz" comment="创建时间" nullable="false" default="now()" />
         <column name="updated_at" type="timestamptz" comment="更新时间，业务显式更新" nullable="false" default="now()" />
       </columns>

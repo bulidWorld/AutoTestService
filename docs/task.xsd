@@ -1,0 +1,212 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:annotation>
+    <xs:documentation xml:lang="zh">任务导入格式，无命名空间。使用 task/parameters/parameter 和 taskStep/rest；标签严格区分大小写，正确拼写为 parameter、extractParam。接口必须已导入同一项目，method/path 唯一匹配各文件当前版本。运行地址由 multipart 表单 base_url 提供。所有名字非空且全局参数不可重名。步骤按唯一正整数 order 升序执行。禁止 DTD、实体、外部引用。文本默认 string；valueType 可指定其他 JSON 类型，此时 value 必须是对应 JSON 字面量。固定参数先初始化，extractParam 在所属步骤完成后提取，后续步骤才可引用；表达式如 data[0].id，仅支持字段和非负数组下标。值中的 XML 特殊字符须转义。</xs:documentation>
+  </xs:annotation>
+  <xs:simpleType name="nonEmpty">
+    <xs:annotation>
+      <xs:documentation xml:lang="zh">非空标识文本。XSD 按 xs:token 检查空白；生成时请直接填写无首尾空白的名字，避免依赖空白归一化。参数名和引用名须保持一致。</xs:documentation>
+    </xs:annotation>
+    <xs:restriction base="xs:token">
+      <xs:minLength value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="valueType">
+    <xs:annotation>
+      <xs:documentation xml:lang="zh">业务值类型：string 写原始文本（例如 hello，不要额外加 JSON 引号）；integer 写 42；number 写 3.14；boolean 写 true 或 false；object 写 {"id":42}；array 写 [1,2]。除 string 外均按 JSON 解析，类型必须准确；不支持 null、NaN 或无穷大。此类型也用于响应提取结果的类型检查。</xs:documentation>
+    </xs:annotation>
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="string"/>
+      <xs:enumeration value="integer"/>
+      <xs:enumeration value="number"/>
+      <xs:enumeration value="boolean"/>
+      <xs:enumeration value="object"/>
+      <xs:enumeration value="array"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:complexType name="pair">
+    <xs:annotation>
+      <xs:documentation xml:lang="zh">通用 name/value 结构，子元素顺序固定为 name、value。用于固定参数、请求头和响应提取声明；其中 value 在 extractParam 内表示提取表达式，其余位置表示字面值。</xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="name" type="nonEmpty">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">必填名称。parameter 和 extractParam 中为全局参数名，整个任务内去除首尾空白后必须唯一，不能重复赋值声明；header 中为 HTTP 请求头名称，例如 X-Client。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="value" type="xs:string">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">必填文本元素。固定参数和 header 的内容按父元素 valueType 解释，string 可为空且保留值的首尾空白；extractParam 中必须填写响应 JSON 提取表达式，例如 data[0].id，不能填写 JSON 字面值或 Python 代码。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:sequence>
+    <xs:attribute name="valueType" type="valueType" default="string">
+      <xs:annotation>
+        <xs:documentation xml:lang="zh">可选，默认 string。parameter/header 中决定 value 的解析类型；extractParam 中决定响应结果的预期类型（value 仍然是表达式）。例如提取数字 ID 时在 extractParam 上写 valueType="integer"。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+  </xs:complexType>
+  <xs:element name="task">
+    <xs:annotation>
+      <xs:documentation xml:lang="zh">唯一根元素，无 XML 命名空间。先写可选 parameters，再写至少一个 taskStep；不支持未声明的元素或属性。文件只定义任务，不定义接口资产，也不在 XML 内指定 base_url。导入执行格式、接口、绑定和依赖校验，全部通过后创建新任务，不发出 HTTP 请求。</xs:documentation>
+    </xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="parameters" minOccurs="0">
+          <xs:annotation>
+            <xs:documentation xml:lang="zh">可选的固定全局参数容器，只能出现一次，必须位于所有 taskStep 之前。可省略或留空；其中所有固定参数在执行第一个步骤前初始化，不按声明顺序发起请求。响应提取参数请在对应 rest 的 extractParam 中声明。</xs:documentation>
+          </xs:annotation>
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="parameter" minOccurs="0" maxOccurs="unbounded">
+                <xs:annotation>
+                  <xs:documentation xml:lang="zh">固定全局参数，可重复声明不同名字。例如 &lt;parameter type="fixed" valueType="integer"&gt;&lt;name&gt;id&lt;/name&gt;&lt;value&gt;42&lt;/value&gt;&lt;/parameter&gt;。后续 kv 可通过 parameter 子元素引用；字面值恰为 {参数名} 时也会按现有绑定规则引用全局参数。</xs:documentation>
+                </xs:annotation>
+                <xs:complexType>
+                  <xs:complexContent>
+                    <xs:extension base="pair">
+                      <xs:attribute name="type" use="required" fixed="fixed" type="xs:string">
+                        <xs:annotation>
+                          <xs:documentation xml:lang="zh">必填且只能为 fixed，表示固定来源；这里不是值类型。值类型请用 valueType，响应来源请用 extractParam，不能写 type="rest"。</xs:documentation>
+                        </xs:annotation>
+                      </xs:attribute>
+                    </xs:extension>
+                  </xs:complexContent>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="taskStep" minOccurs="1" maxOccurs="unbounded">
+          <xs:annotation>
+            <xs:documentation xml:lang="zh">至少一个，可重复。同一步骤恰好包含一个 rest；同一接口允许用于多个步骤。执行顺序取决于 order 数值而非 XML 出现顺序；步骤失败后停止运行，未执行的步骤及参数跳过。</xs:documentation>
+          </xs:annotation>
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="rest">
+                <xs:annotation>
+                  <xs:documentation xml:lang="zh">当前步骤的 REST 请求。子元素必须依次为：零到多个 header、可选 body、可选 assertionCode、零到多个 extractParam。同一步骤只请求一次，多个 extractParam 共享该次响应；先判定断言，再提取参数。接口按 method/path 匹配同项目每个文件的当前版本，并在保存后固定版本。</xs:documentation>
+                </xs:annotation>
+                <xs:complexType>
+                  <xs:sequence>
+                    <xs:element name="header" type="pair" minOccurs="0" maxOccurs="unbounded">
+                      <xs:annotation>
+                        <xs:documentation xml:lang="zh">可选、可重复的 HTTP 请求头，name 不区分大小写且不能重复。value 通常使用默认 string；整个值写成 {client} 可引用已初始化的全局参数。禁止换行、对象和数组，以及 Host、Content-Length、Connection 等执行配置相关请求头。JSON 请求体自动补齐 Content-Type；显式指定时须为 application/json。Authorization/Cookie 等敏感头在返回详情中脱敏。</xs:documentation>
+                      </xs:annotation>
+                    </xs:element>
+                    <xs:element name="body" minOccurs="0">
+                      <xs:annotation>
+                        <xs:documentation xml:lang="zh">可选请求参数绑定容器，并不等同于 HTTP 请求体：其中 kv 可以绑定 path、query 或 JSON body。可省略或为空，但接口必填参数仍须完整提供。仅支持 application/json 请求体，不支持 multipart 执行。普通 key 在 path/query/JSON 顶层字段中唯一匹配；歧义用 location 指定。嵌套 JSON 用 Pointer，例如 /data/id。</xs:documentation>
+                      </xs:annotation>
+                      <xs:complexType>
+                        <xs:sequence>
+                          <xs:element name="kv" minOccurs="0" maxOccurs="unbounded">
+                            <xs:annotation>
+                              <xs:documentation xml:lang="zh">一项字段绑定，可重复但不可重复绑定同一字段；JSON 父子字段也不能同时绑定。先写可选 key，再且只能写 value 或 parameter。字面值必须带 key；引用参数时省略 key 则用参数名作为字段名。例如 &lt;kv location="query"&gt;&lt;key&gt;page&lt;/key&gt;&lt;value&gt;1&lt;/value&gt;&lt;/kv&gt;（数字接口字段需另写 valueType="integer"）。</xs:documentation>
+                            </xs:annotation>
+                            <xs:complexType>
+                              <xs:sequence>
+                                <xs:element name="key" type="nonEmpty" minOccurs="0">
+                                  <xs:annotation>
+                                    <xs:documentation xml:lang="zh">目标字段名；普通名称精确匹配接口 path/query 参数或 JSON 顶层属性。JSON Pointer 以 / 开头，~ 和 / 在属性名内分别转义成 ~0 和 ~1，例如 /data/items/0/id。绑定嵌套字段时必须存在于接口 Schema 中。只有使用 parameter 引用且目标同名时才可省略 key。</xs:documentation>
+                                  </xs:annotation>
+                                </xs:element>
+                                <xs:choice>
+                                  <xs:element name="value" type="xs:string">
+                                    <xs:annotation>
+                                      <xs:documentation xml:lang="zh">字段字面值，与同级 parameter 二选一。按 kv 的 valueType 解析，并校验是否符合目标接口字段 Schema。string 可为空；整个字符串若恰为 {id}，会按现有规则引用全局参数 id，不支持字符串插值拼接。</xs:documentation>
+                                    </xs:annotation>
+                                  </xs:element>
+                                  <xs:element name="parameter" type="nonEmpty">
+                                    <xs:annotation>
+                                      <xs:documentation xml:lang="zh">引用全局参数名，而不是嵌套 parameter 定义；不能带 type、name、value 子元素。必须引用固定参数或前序步骤已提取的参数，不能引用当前步骤或后续步骤的提取结果。保留参数实际类型，kv 的 valueType 不转换引用值。示例：&lt;kv location="path"&gt;&lt;key&gt;order_id&lt;/key&gt;&lt;parameter&gt;id&lt;/parameter&gt;&lt;/kv&gt;。</xs:documentation>
+                                    </xs:annotation>
+                                  </xs:element>
+                                </xs:choice>
+                              </xs:sequence>
+                              <xs:attribute name="valueType" type="valueType" default="string">
+                                <xs:annotation>
+                                  <xs:documentation xml:lang="zh">可选，默认 string，仅解析本 kv 的 value 字面值；使用 parameter 时忽略该属性，直接保留被引用参数的类型。目标字段要求 integer 时请写 valueType="integer"，不能用字符串 "42" 代替数字 42。</xs:documentation>
+                                </xs:annotation>
+                              </xs:attribute>
+                              <xs:attribute name="location">
+                                <xs:annotation>
+                                  <xs:documentation xml:lang="zh">可选目标位置，取 path/query/body。未指定时必须能够唯一推断；同名 path 和 query 参数须显式指定。body 表示 JSON 字段，普通 key 匹配顶层属性，Pointer 匹配嵌套属性。HTTP 请求头使用 header 元素填写。</xs:documentation>
+                                </xs:annotation>
+                                <xs:simpleType>
+                                  <xs:restriction base="xs:string">
+                                    <xs:enumeration value="path"/>
+                                    <xs:enumeration value="query"/>
+                                    <xs:enumeration value="body"/>
+                                  </xs:restriction>
+                                </xs:simpleType>
+                              </xs:attribute>
+                            </xs:complexType>
+                          </xs:element>
+                        </xs:sequence>
+                      </xs:complexType>
+                    </xs:element>
+                    <xs:element name="assertionCode" type="xs:string" minOccurs="0">
+                      <xs:annotation>
+                        <xs:documentation xml:lang="zh">可选 Python 业务断言，建议用 CDATA 保留缩进和特殊字符。必须定义唯一入口 def assert_response(responseBody, globalParam): 并返回 bool；responseBody 为本步响应 JSON，globalParam 为当前已初始化参数字典。示例函数体：return responseBody["code"] == 0。禁止 import；断言在本步参数提取之前执行。省略或空白时使用 HTTP 2xx 判定；提供断言时由返回值决定成功，异常或非布尔返回值导致失败。</xs:documentation>
+                      </xs:annotation>
+                    </xs:element>
+                    <xs:element name="extractParam" type="pair" minOccurs="0" maxOccurs="unbounded">
+                      <xs:annotation>
+                        <xs:documentation xml:lang="zh">可选、可重复的响应提取声明。name 声明新的全局参数，value 为当前响应 JSON 上的表达式，例如 data[0].id；valueType 默认 string，提取数字时须写 integer 或 number。仅支持点分字段和非负整数数组下标，不支持 $ 前缀、通配符、函数或 Python 表达式。字段不存在、值为 null、类型不符或响应不是所需 JSON 时运行失败。该参数仅在本步断言通过且提取成功后可供后续步骤引用。</xs:documentation>
+                      </xs:annotation>
+                    </xs:element>
+                  </xs:sequence>
+                  <xs:attribute name="method" use="required">
+                    <xs:annotation>
+                      <xs:documentation xml:lang="zh">必填、大写 HTTP 方法，仅允许列出的枚举值。与 path 共同精确匹配项目中已导入接口；匹配不到或跨文件匹配到多个接口均拒绝导入，不会自动新建接口。</xs:documentation>
+                    </xs:annotation>
+                    <xs:simpleType>
+                      <xs:restriction base="xs:string">
+                        <xs:enumeration value="GET"/>
+                        <xs:enumeration value="POST"/>
+                        <xs:enumeration value="PUT"/>
+                        <xs:enumeration value="PATCH"/>
+                        <xs:enumeration value="DELETE"/>
+                        <xs:enumeration value="HEAD"/>
+                        <xs:enumeration value="OPTIONS"/>
+                        <xs:enumeration value="TRACE"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                  <xs:attribute name="path" type="nonEmpty" use="required">
+                    <xs:annotation>
+                      <xs:documentation xml:lang="zh">必填接口定义路径，以 / 开头，例如 /orders/{id}，须保留接口原有路径占位符，不要填写真实 ID、域名、query 或 fragment。运行时与表单 base_url 拼接，路径占位符由 body/kv 的 path 绑定填充。</xs:documentation>
+                    </xs:annotation>
+                  </xs:attribute>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+            <xs:attribute name="order" type="xs:positiveInteger" use="required">
+              <xs:annotation>
+                <xs:documentation xml:lang="zh">必填、任务内唯一的正整数，按数值升序执行。可不连续，例如 10、20；不能为 0 或负数。XML 文本中先写 order="20" 再写 order="10"，仍先执行 10。参数依赖也按该排序校验。</xs:documentation>
+              </xs:annotation>
+            </xs:attribute>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+      <xs:attribute name="name" use="required">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">必填任务名称，去除首尾空白后不能为空，最长 120 字符，在同一项目内必须唯一。重复名称返回冲突，不覆盖现有任务。</xs:documentation>
+        </xs:annotation>
+        <xs:simpleType>
+          <xs:restriction base="nonEmpty">
+            <xs:maxLength value="120"/>
+          </xs:restriction>
+        </xs:simpleType>
+      </xs:attribute>
+    </xs:complexType>
+    <xs:unique name="uniqueOrder">
+      <xs:annotation>
+        <xs:documentation xml:lang="zh">XSD 层校验：同一 task 下所有 taskStep 的 order 不得重复。全局参数名唯一、接口归属、参数类型和依赖就绪等约束还会由业务层继续校验，XSD 校验成功不代表可直接运行。</xs:documentation>
+      </xs:annotation>
+      <xs:selector xpath="taskStep"/>
+      <xs:field xpath="@order"/>
+    </xs:unique>
+  </xs:element>
+</xs:schema>

@@ -1,6 +1,6 @@
 # AutoTestService
 
-接口自动化测试服务的 Python 单体应用。阶段一已按 [OpenAPI YAML 契约](docs/rest-project.yaml) 实现项目管理、YAML 导入与全量更新、历史版本、接口浏览及关联删除，使用 PostgreSQL 持久化。浏览器访问 `/` 使用管理页面，访问 `/docs` 查看接口文档。业务需求见 [需求总览](context/requirement/overview.md)。
+接口自动化测试服务的 Python 单体应用。阶段一已按 [OpenAPI YAML 契约](<docs/ rest-api/rest-project.yaml>) 实现项目管理、YAML 导入与全量更新、历史版本、接口浏览及关联删除，使用 PostgreSQL 持久化。浏览器访问 `/` 使用管理页面，访问 `/docs` 查看接口文档。业务需求见 [需求总览](context/requirement/overview.md)。
 
 首次部署可直接按 [逐步初始化与运行命令](step_by_step.md) 执行，包含明确的数据库连接参数和密码配置步骤。
 
@@ -17,7 +17,7 @@ app/
 config/            基础、生产及本地配置
 scripts/           标准启停和数据库脚本
 db/                XML 表定义与 database.xsd
-docs/rest-project.yaml  HTTP 接口唯一契约
+docs/ rest-api/rest-project.yaml  HTTP 接口唯一契约
 tests/             基础行为验证
 logs/              预留目录；默认实际日志在 /var/service/log/auto-test-service/
 run/               PID 和部署操作锁
@@ -285,7 +285,7 @@ tail -n 100 logs/application.log
 
 ## 接口开发规则
 
-每个接口 YAML 对应一个 Python 实现文件：`docs/rest-project.yaml` 对应
+每个接口 YAML 对应一个 Python 实现文件：`docs/ rest-api/rest-project.yaml` 对应
 `app/repository/rest_project.py`，在 `app/api/registry.py` 的
 `CONTRACT_IMPLEMENTATIONS` 中按 YAML 文件名（不含扩展名）注册。
 每个 `operationId` 对应实现文件中一个同名函数，例如 `createProject` 对应
@@ -320,6 +320,28 @@ XML 放在 `db/`，格式遵循 `db/database.xsd`；`db_sync.sh`、`db_init.sh`�
 
 ## 日志与验证
 
+任务步骤可配置 `assertion_code`，代码须包含标准 Python 入口并返回 `bool`：
+
+```python
+def assert_response(responseBody, globalParam):
+    return responseBody["items"][0]["id"] == globalParam["T1"]
+```
+
+`responseBody` 是 JSON 解析结果，`globalParam` 仅包含当前步骤执行前已初始化的参数。
+断言在当前步骤参数提取前执行，返回值替代 HTTP 2xx 判定；未设置、`null`、空串或空白
+表示按 HTTP 2xx 判断，完整保存时省略该字段会清除旧代码。复制任务和运行快照保留代码。
+入口不能命名为 `assert`，它是 Python 保留字；JSON 对象使用 `body["id"]` 访问字段。
+
+保存及运行前校验代码语法和入口，不执行代码。支持同步 Python 计算、辅助函数、条件、循环
+及常用内置函数；不支持导入模块、文件操作、类、私有属性、装饰器、类型注解和默认参数。
+代码最多 16000 字符，独立进程执行，CPU 上限 2 秒、总等待上限 3 秒、内存上限 256 MiB。
+断言失败、执行异常或超限、非布尔返回值分别记录 `ASSERTION_FAILED`、
+`ASSERTION_EXECUTION_ERROR`、`ASSERTION_RETURN_TYPE_ERROR`；非 JSON 响应记录
+`RESPONSE_NOT_JSON`。连接失败或 HTTP 超时不执行断言。步骤失败后停止运行并跳过后续步骤。
+
+升级已有数据库执行 `bash scripts/db_sync.sh`，为 `task_steps` 增加可空的
+`assertion_code` 列；`start.sh` 也会自动同步。重启后新代码生效。
+
 application.log、error.log、access.log 使用 JSON，包含时间、级别、服务、进程、线程、模块、请求 ID。按大小轮转，默认 100 MiB、保留 30 个历史文件。HTTP 响应返回 `X-Request-ID`。不记录请求头、体、查询参数或原始异常文本，异常记录类型；后续业务日志同样必须遵守敏感信息规则。
 
 ```bash
@@ -347,7 +369,7 @@ AUTOTEST_DB_TESTS=1 .venv/bin/pytest -q
 
 导入器支持 `application/json` 与 `multipart/form-data` 请求体定义，每个请求体限一种
 媒体类型。multipart 的普通字段、文件字段（`format: binary`）、必填字段及 encoding
-信息均保留在接口详情中。因此 `docs/rest-project.yaml` 可直接作为导入文件；导入后可
+信息均保留在接口详情中。因此 `docs/ rest-api/rest-project.yaml` 可直接作为导入文件；导入后可
 浏览全部接口及其上传定义。其他请求体媒体类型仍返回定位明确的错误。
 
 业务请求失败（包括 YAML 校验失败）会写入 `application.log` 和 `error.log`，记录

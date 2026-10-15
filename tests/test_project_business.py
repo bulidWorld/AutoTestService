@@ -19,7 +19,7 @@ from app.service.errors import BusinessError
 from app.service.openapi_import import MAX_BYTES, parse_upload, redact
 
 EXAMPLES = ROOT / "context/requirement/1-1.support_mang_proj/examples"
-SPEC = load_contract(ROOT / "docs/rest-project.yaml")
+SPEC = load_contract(ROOT / "docs/ rest-api/rest-project.yaml")
 
 
 @pytest.fixture

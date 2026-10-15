@@ -40,3 +40,13 @@ AUTOTEST_DB_TESTS=1 .venv/bin/python -m pytest tests/test_interface_test.py -q
 `POST /api/v1/parameters/rest/extract` 接收 `parameter_name`、`value_type`、`extract_expression` 和 `response`。例如 `response={"response_body":"{\"data\":{\"a\":1}}"}`，表达式为 `data.a`、类型为 `integer` 时返回 `value=1`。响应体编码默认 `utf-8`，按流水线规则解析 JSON 并校验提取类型。该接口不访问数据库、不发送 HTTP 请求、不保存配置或运行记录。
 
 无效输入或表达式返回 400；非 JSON 响应、缺少字段、类型不匹配返回 422，并提供错误分类及字段位置，不回显响应原值。
+
+XML 任务导入：`POST /api/v1/projects/{project_id}/tasks/import`，使用 multipart/form-data 的 `file`（.xml，最多 5 MiB）和 `base_url` 字段。格式见 [task.xsd](task.xsd)，完整示例见 [examples/task.xml](examples/task.xml)。步骤按正整数 order 升序执行，method/path 匹配本项目各文件当前版本的唯一接口；缺失或歧义均拒绝。同名任务返回 409，所有校验通过才原子保存。导入不发送请求，不创建或修改接口资产。
+
+`parameter` 的 type 必须为 fixed；`valueType` 默认为 string，其他类型使用 JSON 字面量。`extractParam` 声明由步骤响应赋值的全局参数，同名参数拒绝。body/kv 支持 key/value 或 key/parameter；引用参数时可省略 key，使用参数名。key 自动匹配 path/query/JSON 顶层字段，歧义通过 location 指定，嵌套 JSON 使用 Pointer。assertionCode 可省略，也可使用 CDATA 保存现有 Python 断言入口。
+
+```bash
+curl -X POST http://localhost:8000/api/v1/projects/1/tasks/import \
+  -F 'file=@docs/examples/task.xml;type=application/xml' \
+  -F 'base_url=https://api.example.com'
+```

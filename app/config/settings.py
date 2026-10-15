@@ -46,7 +46,9 @@ def load_settings() -> dict:
         if log["max_bytes"] <= 0 or log["backup_count"] <= 0:
             raise ValueError("日志轮转大小及保留数必须为正数")
         if not absolute(base["contract"]).is_file():
-            raise ValueError("找不到 OpenAPI 契约文件")
+            raise ValueError(f"找不到 OpenAPI 契约文件：{absolute(base['contract'])}")
         return base
     except (OSError, yaml.YAMLError, KeyError, TypeError, AttributeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("找不到 OpenAPI 契约文件："):
+            raise
         raise ValueError("应用配置无效，请检查配置文件、端口及必填项") from exc

@@ -37,8 +37,8 @@ try:
     values['ADMIN_AUTH'] = database['admin'].get('auth', 'password')
     values['ADMIN_SYSTEM_USER'] = database['admin'].get('system_user', database['admin']['user'])
     print('\n'.join(f'{key}={shlex.quote(str(value))}' for key, value in values.items()))
-except Exception:
-    print('配置读取失败，请检查 application.yaml 和覆盖配置', file=sys.stderr)
+except Exception as exc:
+    print(f'配置读取失败，请检查 application.yaml 和覆盖配置：{exc}', file=sys.stderr)
     sys.exit(1)
 PY
 )"; then

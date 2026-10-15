@@ -102,6 +102,72 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/TaskWrite'
+  /api/v1/projects/{project_id}/tasks/import:
+    post:
+      operationId: importTask
+      tags: [任务管理]
+      summary: 导入 XML 任务
+      description: 按 docs/task.xsd 校验 XML；按 method/path 精确匹配本项目各文件当前版本的唯一接口。按 order 排序，复用任务保存校验，原子创建，不执行请求。未知接口或匹配歧义返回 400，同名任务返回 409。当前阶段无需认证。
+      parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        description: 上传不超过 5 MiB 的 XML 文件，并指定任务运行地址。
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [file, base_url]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 符合 docs/task.xsd 的 .xml 文件，禁止 DTD 和实体。
+                base_url:
+                  type: string
+                  minLength: 1
+                  maxLength: 2048
+                  description: 无凭据、query 或 fragment 的 HTTP/HTTPS 运行地址。
+                  example: https://api.example.com
+              example: {file: task.xml, base_url: 'https://api.example.com'}
+      responses:
+        '201':
+          description: 原子创建成功，返回脱敏任务详情。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          description: XML、接口匹配或任务配置无效。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 项目不存在。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 任务名称冲突。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          description: 文件超过 5 MiB。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 内部错误，返回脱敏说明。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/projects/{project_id}/tasks/{task_id}:
     get:
       operationId: getTask
@@ -654,8 +720,9 @@ components:
     BusinessAssertionCode:
       type: string
       nullable: true
+      maxLength: 16000
       description: |
-        可选的业务成功断言完整代码，包含方法名和函数定义，入口格式为 def assert(responseBody, globalParam):，必须返回 boolean（true/false，示例代码使用 True/False）。
+        可选的业务成功断言完整代码，包含方法名和函数定义，入口格式为 def assert_response(responseBody, globalParam):，必须返回 boolean（true/false，示例代码使用 True/False）。
         省略、null、空字符串或仅空白表示未设置；完整保存时未设置即清除原有断言，按 HTTP 200～299 判断请求成功。
         设置后，在响应完整读取后、当前步骤的 REST 参数提取前调用断言，以其返回值替代 HTTP 状态码成功判定；非 2xx 响应也执行断言。
         responseBody 为 JSON 解析后的响应体，支持对象、数组和 JSON 标量；无法解析时以 RESPONSE_NOT_JSON 失败，不调用断言。
@@ -663,9 +730,11 @@ components:
         返回 True 表示业务断言通过，False 以 ASSERTION_FAILED 失败；执行异常以 ASSERTION_EXECUTION_ERROR 失败，非布尔返回值以 ASSERTION_RETURN_TYPE_ERROR 失败。
         连接失败或超时仍直接失败，不调用断言；断言通过后仍须完成该步骤关联的参数提取，提取失败则步骤失败。
         保存和运行前静态校验完整函数定义及入口签名，不执行断言；无效配置返回 400，issues 定位 steps 数组对应项的 assertion_code。
-        assert 为 Python 保留字；此处为约定的断言入口格式，执行器须适配该入口，不得直接作为标准 Python 函数定义执行。
+        使用标准 Python 函数入口 assert_response；不支持 def assert（assert 为保留字）。
+        最多 16000 字符，顶层仅允许函数定义；支持同步 Python 计算、循环、条件与常用内置函数，不支持导入模块、类、私有属性、装饰器、类型注解和默认参数。
+        在独立进程中执行，CPU 上限 2 秒、总等待上限 3 秒、内存上限 256 MiB；超限按 ASSERTION_EXECUTION_ERROR 失败，不返回异常原文。
       example: |
-        def assert(responseBody, globalParam):
+        def assert_response(responseBody, globalParam):
             return responseBody.get("code") == 0 and responseBody.get("data", {}).get("id") == globalParam["expected_id"]
     StepInput:
       type: object

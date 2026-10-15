@@ -16,8 +16,8 @@ def local_logs(tmp_path, monkeypatch):
 
 
 def test_health_and_contract_are_consistent():
-    contract = load_contract(ROOT / "docs/rest-project.yaml")
-    with TestClient(create_app("docs/rest-project.yaml")) as client:
+    contract = load_contract(ROOT / "docs/ rest-api/rest-project.yaml")
+    with TestClient(create_app("docs/ rest-api/rest-project.yaml")) as client:
         assert client.get("/openapi.json").json() == contract
         response = client.get("/api/v1/health")
         assert response.status_code == 200
@@ -38,7 +38,7 @@ def test_readiness_unavailable_is_not_healthy(monkeypatch):
 
 
 def test_missing_handlers_bind_each_route_and_ignore_path_metadata(tmp_path):
-    contract = load_contract(ROOT / "docs/rest-project.yaml")
+    contract = load_contract(ROOT / "docs/ rest-api/rest-project.yaml")
     for path in ["/missing-one", "/missing-two"]:
         contract["paths"][path] = {
             "summary": "路径说明",
@@ -62,7 +62,7 @@ def test_invalid_contract_fails_clearly(tmp_path):
 
 def test_configuration_paths_ignore_working_directory(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    assert load_settings()["contract"] == "docs/rest-project.yaml"
+    assert load_settings()["contract"] == "docs/ rest-api/rest-project.yaml"
     assert ROOT.is_absolute()
 
 
