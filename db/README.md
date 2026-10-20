@@ -65,18 +65,19 @@ AUTOTEST_DB_TESTS=1 .venv/bin/python -m pytest tests/test_phase1_database.py -q
 
 主键、唯一约束、CHECK 约束、索引和历史定义不可变触发器继续提供各自的校验。删除迁移文件不会恢复已经移除的外键。
 
-## 步骤组
+## 项目级多任务组
 
-[030_task_groups.xml](030_task_groups.xml) 定义任务内的 `task_groups` 和
-`task_group_steps`。接口契约独立维护在 [rest-group.yaml](../docs/%20rest-api/rest-group.yaml)，业务实现位于 `app/repository/rest_group.py`，默认应用已注册。
+[040_task_collections.xml](040_task_collections.xml) 定义任务组配置、成员批次、组运行、
+成员运行关联和参数覆盖审计五张表。接口见
+[rest-task-collection.yaml](../docs/%20rest-api/rest-task-collection.yaml)，执行与事务规则见
+[设计说明](../context/requirement/2-2.support_task_group/design.md)。
 
-- 组属于一个任务，组名去除首尾空白后在任务内区分大小写唯一。步骤可加入多个组，同组成员不得重复；成员必须属于该任务。
-- `task_group_steps.position` 按 `step_ids` 顺序从 1 连续递增，独立于任务原始步骤顺序。空组允许保存，禁止运行；不支持嵌套组。
-- 组运行沿用 `task_runs`，新增可空 `group_id`。整任务运行为 NULL，组运行必须设置组 ID；运行响应必须返回 `group_id`。快照保存组 ID、名称、有序步骤及所需参数和接口配置；只创建组内步骤结果。
-- 固定参数先初始化；只使用本次组运行所需的 REST 参数及其递归依赖。源步骤必须在组内且先于使用者，否则运行前拒绝，不自动执行组外步骤。
-- 保存组、替换成员、删除组及启动运行均锁定任务行；任务已有 queued/running 运行时拒绝配置修改和重复启动，整任务与所有组共享此限制。
-- 删除组只删除成员关系及组，不删除原步骤和运行历史。删除被组引用的步骤必须在同一事务显式解除成员关系并重排；删除任务或项目需清理对应组及成员关系。复制任务时复制组并重映射步骤 ID。
-- 沿用无外键方案，归属、名称唯一、连续顺序及关联清理由业务事务保证。运行历史不关联活跃组查询，组删除后仍保留 group_id 和快照。
+- 成员任务属于同一项目；同组任务不重复，position 为正整数，可重复且不要求连续。
+- 按 position 升序执行批次，同批并发。批次输入保存于成员 input_parameters，ready 表示输入已冻结、允许调度。
+- 每个成员复用 task_runs 保存独立运行结果。活动组预约全部成员，即使某个成员已完成也不能再次独立启动。
+- 批次全部成功后按 task_id 升序合并参数；任何成员失败，本批不提交共享参数，后续成员跳过。
+- 覆盖记录保存原、新任务及运行 ID，logged_at 作为 ERROR 日志投递状态，不保存参数值。
+- 单独删除组保留运行历史；删除任务前必须先解除组配置引用。项目删除显式清理全部关联历史。
+- 原任务内步骤组功能已移除；已有数据库中的旧表和可空列不再使用，不自动删除历史结构。
 
-当前无业务数据，直接维护目标表结构和接口契约，不设计历史数据迁移或旧响应兼容。
-部署前执行 `bash scripts/db_sync.sh` 同步表结构。
+部署前执行 `bash scripts/db_sync.sh`；XML 内包含运行期新增字段的幂等升级语句。

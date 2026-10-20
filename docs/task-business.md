@@ -1,6 +1,6 @@
 # 任务业务实现
 
-`rest-task.yaml` 的任务操作通过 `app/repository/rest_task.py` 显式绑定；参数预览及单次响应解析由 `rest-parameter.yaml` 与 `app/repository/rest_parameter.py` 提供。默认应用加载项目、任务、参数及步骤组契约；加载时将跨文件组件引用打包为本地引用，合并 OpenAPI 文档时添加命名空间，避免同名 Schema 相互覆盖。HTTP 成功状态码来自契约：创建/复制为 201，启动运行为 202，校验及预览为 200。
+`rest-task.yaml` 的任务操作通过 `app/repository/rest_task.py` 显式绑定；参数预览及单次响应解析由 `rest-parameter.yaml` 与 `app/repository/rest_parameter.py` 提供。默认应用加载项目、任务、参数及任务组契约；加载时将跨文件组件引用打包为本地引用，合并 OpenAPI 文档时添加命名空间，避免同名 Schema 相互覆盖。HTTP 成功状态码来自契约：创建/复制为 201，启动运行为 202，校验及预览为 200。
 
 任务保存、复制、删除和启动在数据库事务中执行，按项目、任务顺序加锁。任务名称与参数名称唯一性、接口及步骤归属、引用有效性由程序校验。全局 REST 参数只保存 `rest_source.step_id` 与 `extract_expression`，复用该步骤的接口版本和绑定。新步骤与 REST 参数可同时提交：rest_source.step_index 使用本次提交 steps 数组从 0 开始的下标，与 step_id 二选一。服务先校验完整配置，再在同一事务保存步骤并将引用转换为数据库稳定 step_id；返回及持久化配置只包含 step_id。
 
@@ -51,22 +51,49 @@ curl -X POST http://localhost:8000/api/v1/projects/1/tasks/import \
   -F 'base_url=https://api.example.com'
 ```
 
-## 步骤组
+## 多任务组
 
-`rest-group.yaml` 通过 `app/repository/rest_group.py` 实现组管理和运行。组属于任务，
-同一步骤可属于多个组；成员数组决定组内执行顺序。名称去除首尾空白后任务内唯一，
-允许保存空组，运行空组返回 400。删除组需要 `confirm=true`，成功返回 204 空响应。
+`rest-task-collection.yaml` 由 `app/repository/rest_task_collection.py` 显式绑定，默认应用自动加载。
+旧任务内步骤组功能已移除。任务组属于项目，引用多个本项目任务，每个成员执行完整任务。
 
-组运行复用任务运行执行器、队列及运行查询接口。启动时锁定项目及任务，整任务和组运行
-共享任务的 queued/running 互斥。组管理写操作也拒绝在任务活动运行期间执行。
-组快照包含组名、有序成员和接口配置；查询运行详情时 `config_snapshot.group` 返回组快照，
-`run.group_id` 标识来源。删除或修改组不改变运行快照，整任务运行的 `group_id` 为 null。
+使用 `/api/v1/projects/{project_id}/task-collections` 创建、分页查询；
+`/{collection_id}` 查询、完整更新或删除。创建示例：
 
-组运行先初始化固定参数，只保留组内请求及断言所需的 REST 参数。所有组内步骤的绑定均
-参与依赖校验，参数源步骤必须在组内并排在使用者之前；缺源、逆序或循环依赖在创建运行前
-返回 400，不额外执行组外步骤。Python 断言支持静态识别 `globalParam["name"]` 和
-`globalParam.get("name")`；动态键、遍历或传递整个参数字典时，保守地检查全部声明参数。
-断言在当前步骤提取参数之前执行，不能使用当前或后续步骤才产生的参数。
+```json
+{
+  "name": "登录与订单测试",
+  "members": [
+    {"task_id": 11, "position": 1},
+    {"task_id": 12, "position": 2},
+    {"task_id": 13, "position": 2}
+  ]
+}
+```
 
-复制任务同时复制组并映射到新步骤 ID；任务配置移除步骤时清理成员引用并重排组内顺序。
-删除任务或项目会清理组及成员，保留单独删除组之前产生的运行历史。
+`POST /{collection_id}/runs` 无请求体，返回 202 和组运行 ID。
+`GET /{collection_id}/runs` 查询历史，`GET /{collection_id}/runs/{run_id}` 返回成员状态、
+对应 task_run_id 与脱敏后的共享参数；成员请求及步骤详情仍使用原任务运行查询接口。
+`GET /{collection_id}/runs/{run_id}/overrides` 分页查询覆盖来源。
+删除组需要 `confirm=true`，返回 204；组删除后运行详情和历史仍可查询。
+
+批次按 position 升序执行，同批并发并等待全部完成，所有任务共享服务的八个执行槽位。
+同批成员读取相同的上批参数快照，各自初始化本任务 fixed 参数，再按步骤提取 REST 参数。
+全部成功后按 task_id 升序合并实际写入，后写覆盖同名参数，即使值相等也记录覆盖。
+ERROR 日志包含参数名称、原任务/运行 ID 和新任务/运行 ID；不包含参数原值或新值。
+日志使用数据库投递状态补发，允许按 audit_id 识别重启后的重复日志。
+
+参数名称必须已在本任务声明，类型必须在组内一致。已声明 REST 参数可在源步骤执行之前
+从上一批继承初值；同批产出的新值不能互相依赖。保存可暂存需要前序批次输入的 REST 绑定；单独启动缺少输入的任务仍返回 400。
+断言和绑定在启动前校验，缺失或顺序错误返回 400。
+参数敏感标记按组内同名声明保守合并，敏感值与历史请求均按原有规则脱敏。
+
+任一成员失败，等待本批已启动成员完成，本批写集不发布，未启动成员和后续批次跳过，组运行失败。
+外部 HTTP 副作用不回滚、不自动重试。重启将遗留组及其未完成成员标记 EXECUTION_INTERRUPTED。
+从接受到组终态，全部成员均被预约；活动组禁止改删，预约任务禁止改删及重复启动。
+被组配置引用的任务须先移除成员再删除；删除项目时清理所有组配置、审计和成员运行历史。
+
+部署前执行 `bash scripts/db_sync.sh`，重启应用加载新增接口与调度逻辑。
+
+```bash
+AUTOTEST_DB_TESTS=1 .venv/bin/python -m pytest tests/test_task_collections.py tests/test_task_business.py -q
+```

@@ -214,7 +214,7 @@ paths:
       tags:
       - 任务管理
       summary: 保存任务及步骤排序
-      description: 完整替换参数和步骤；保留已有步骤 ID，新步骤分配 ID。同一接口可重复添加。显式重新选择版本后校验绑定。锁定任务行协调保存和启动；运行中允许编辑，历史快照不受影响。
+      description: 完整替换参数和步骤；保留已有步骤 ID，新步骤分配 ID。同一接口可重复添加。显式重新选择版本后校验绑定。锁定任务行协调保存和启动；单任务运行中允许编辑，历史快照不受影响；被活动任务组预约时禁止编辑，返回 409。
         当前阶段无需认证。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -263,7 +263,7 @@ paths:
       tags:
       - 任务管理
       summary: 删除任务
-      description: confirm=true 代表页面二次确认。事务内锁定任务行检查 queued/running，依次清理请求、运行参数、运行步骤、运行、任务步骤、参数及任务。
+      description: confirm=true 代表页面二次确认。事务内锁定任务行检查 queued/running、活动任务组预约及任务组配置引用。先移除任务组配置引用才能删除；保留任务组成员运行历史，清理其余请求、运行参数、运行步骤、运行、任务步骤、参数及任务。
         当前阶段无需认证。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -354,7 +354,7 @@ paths:
       tags:
       - 任务管理
       summary: 删除影响预览
-      description: 显示关联运行及请求数量；有未结束运行时禁止删除。 当前阶段无需认证。
+      description: 显示关联运行及请求数量；有未结束运行、被活动任务组预约或被任务组配置引用时禁止删除。 当前阶段无需认证。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
       - $ref: '#/components/parameters/TaskId'
@@ -395,7 +395,7 @@ paths:
       tags:
       - 任务管理
       summary: 校验任务
-      description: 只做静态校验，不调用接口：校验必填、类型、版本归属及 REST step_id 归属，禁止不存在或移除的步骤、循环及源步骤首次执行前未就绪的参数依赖。错误返回
+      description: 只做静态校验，不调用接口：校验必填、类型、版本归属及 REST step_id 归属，禁止不存在或移除的步骤；save 模式允许已声明 REST 参数作为待继承的组输入，run 模式拒绝本任务内未就绪依赖和循环。错误返回
         valid=false 与 issues。run 模式至少一个步骤。当前阶段无需认证。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -887,7 +887,7 @@ components:
         execution_phase: steps
     TaskWrite:
       type: object
-      description: 原子保存完整任务配置，参数及步骤数组决定各自顺序。REST 来源使用稳定 step_id 或本次提交 steps 数组下标 step_index（从 0 开始）二选一，复用步骤的接口版本与绑定。新步骤与参数可一起提交，保存时转换为稳定 step_id；复制任务时重建全部步骤 ID 并映射参数引用。所有步骤按步骤数组顺序执行一次，每步完成后提取其绑定参数。参数引用的初始化步骤只能使用该步骤首次执行前已初始化的全局参数，拒绝自身、后序依赖及循环；同一步骤可供多个参数提取同一次响应，不重新请求。步骤可配置 assertion_code 完整业务断言，复制和运行快照保留断言代码；未设置时按 HTTP 2xx 判断，设置时以断言 boolean 返回值判断。绑定失败、断言失败或提取失败导致运行失败；静态校验不发请求。删除被引用步骤必须同时解除或改绑引用。至少有一个步骤才允许运行；全部步骤成功判定通过且表达式赋值成功则运行成功。
+      description: 原子保存完整任务配置，参数及步骤数组决定各自顺序。REST 来源使用稳定 step_id 或本次提交 steps 数组下标 step_index（从 0 开始）二选一，复用步骤的接口版本与绑定。新步骤与参数可一起提交，保存时转换为稳定 step_id；复制任务时重建全部步骤 ID 并映射参数引用。所有步骤按步骤数组顺序执行一次，每步完成后提取其绑定参数。保存草稿可引用已声明但尚未初始化的 REST 参数，供任务组从严格前序批次继承；单任务启动必须本任务内已初始化，任务组启动须证明前序批次或本任务前序步骤提供值，拒绝同批依赖及循环；同一步骤可供多个参数提取同一次响应，不重新请求。步骤可配置 assertion_code 完整业务断言，复制和运行快照保留断言代码；未设置时按 HTTP 2xx 判断，设置时以断言 boolean 返回值判断。绑定失败、断言失败或提取失败导致运行失败；静态校验不发请求。删除被引用步骤必须同时解除或改绑引用。至少有一个步骤才允许运行；全部步骤成功判定通过且表达式赋值成功则运行成功。
       properties:
         name:
           type: string
@@ -1175,13 +1175,6 @@ components:
           format: int32
           minimum: 1
           maximum: 2147483647
-        group_id:
-          type: integer
-          format: int32
-          minimum: 1
-          maximum: 2147483647
-          nullable: true
-          description: 组运行来源 ID，必须返回；整任务运行为 null，组运行返回组 ID；组删除后仍保留历史来源。
         project_id:
           type: integer
           description: 项目 ID
@@ -1236,7 +1229,6 @@ components:
       required:
       - id
       - task_id
-      - group_id
       - project_id
       - status
       - created_at
@@ -1248,7 +1240,6 @@ components:
       example:
         id: 1
         task_id: 1
-        group_id: null
         project_id: 1
         status: queued
         created_at: '2026-10-13T07:00:00Z'
@@ -1352,10 +1343,6 @@ components:
       type: object
       description: 脱敏的不可变任务配置，包含参数到稳定步骤 ID 的引用映射和全部步骤接口定义。运行结果独立保存，不修改快照。
       properties:
-        group:
-          description: 组运行的不可变组配置，包含组 ID、名称及有序成员；整任务运行不返回此字段。
-          allOf:
-          - $ref: 'rest-group.yaml#/components/schemas/Group'
         task:
           description: 任务详情；敏感值不直接返回，已有敏感值编辑保留规则见 TaskWrite。
           example:
@@ -1817,7 +1804,7 @@ components:
           minimum: 0
         can_delete:
           type: boolean
-          description: 无 queued/running 才允许删除
+          description: 无 queued/running、无活动组预约且未被任务组配置引用才允许删除
           example: true
         blocking_reasons:
           type: array

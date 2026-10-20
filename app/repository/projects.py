@@ -104,6 +104,12 @@ class Projects:
                 )["n"]
                 > 0
             )
+            if not fid and self.one(
+                "SELECT id FROM task_collection_runs WHERE project_id=%s "
+                "AND status IN ('queued','running') LIMIT 1",
+                (pid,),
+            ):
+                blocked = True
             result["can_delete"] = not blocked
             result["blocking_reasons"] = (
                 (["文件被任务步骤引用"] if fid else ["存在未结束运行"]) if blocked else []
@@ -188,7 +194,11 @@ def execute(handler, path, query, body, upload=None):
             # would corrupt typed object values whose property names resemble credentials.
             return (
                 result
-                if handler.__module__ in {"app.repository.rest_task", "app.repository.rest_group"}
+                if handler.__module__
+                in {
+                    "app.repository.rest_task",
+                    "app.repository.rest_task_collection",
+                }
                 or handler.__name__ == "testInterface"
                 else redact(result)
             )

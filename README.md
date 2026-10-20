@@ -354,7 +354,9 @@ for script in scripts/*.sh; do bash -n "$script"; done
 阶段一验收：启动后访问 `http://127.0.0.1:31010/`。在项目内上传
 `context/requirement/1-1.support_mang_proj/examples/valid.yaml`，然后用 `updated.yaml`
 更新，验证新增、修改、移除接口及历史版本保留。`invalid.yaml` 用于验证错误定位与失败回滚。
-文件限制为 UTF-8、OpenAPI 3.0.x、5 MiB；不支持的结构返回错误及 JSON Pointer。
+文件限制为 UTF-8、OpenAPI 3.0.x 或 3.1.x、5 MiB；不支持的结构返回错误及 JSON Pointer。
+
+OpenAPI 3.1 导入保留组合 Schema、null 类型、const 和数值形式的 exclusiveMinimum 等约束；执行绑定按 JSON Schema 2020-12 校验。仍仅支持文件内 components 引用及 JSON/multipart 请求体，绑定值仍不得为 null。复杂组合请求体可通过根 JSON Pointer（空字符串）整体绑定。
 查看版本内容会重新输出脱敏后的 YAML，因此不保留原始排版及注释。
 删除操作先查询影响范围并二次确认；阶段一任务和运行计数为 0。
 

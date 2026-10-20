@@ -77,9 +77,10 @@ def parse_upload(filename, content):
         invalid("文件必须为有效 UTF-8 YAML，且不得包含重复字段", "/", "INVALID_YAML")
     if not isinstance(document, dict):
         invalid("YAML 文档不能为空且必须为对象", "/", "INVALID_YAML")
-    if not re.fullmatch(r"3\.0\.\d+", str(document.get("openapi", ""))):
-        invalid("仅支持 OpenAPI 3.0.x", "/openapi", "INVALID_OPENAPI")
+    if not re.fullmatch(r"3\.[01]\.\d+", str(document.get("openapi", ""))):
+        invalid("仅支持 OpenAPI 3.0.x 或 3.1.x", "/openapi", "INVALID_OPENAPI")
 
+    is_31 = str(document["openapi"]).startswith("3.1.")
     visited = 0
 
     def expand(value, location="", stack=()):
@@ -117,9 +118,16 @@ def parse_upload(filename, content):
                     target = target[part.replace("~1", "/").replace("~0", "~")]
             except (KeyError, TypeError):
                 invalid("引用无法解析", location + "/$ref", "INVALID_OPENAPI")
-            return expand(target, location, stack + (ref,))
+            resolved = expand(target, location, stack + (ref,))
+            if is_31 and len(value) > 1:
+                siblings = expand({k: v for k, v in value.items() if k != "$ref"}, location, stack)
+                # Schema siblings constrain the referenced schema as well (OAS 3.1).
+                if "/schemas/" in location or "/schema" in location:
+                    return {"allOf": [resolved, siblings]}
+                return {**resolved, **siblings}
+            return resolved
         for key in ("oneOf", "anyOf", "allOf", "not"):
-            if key in value and not collection:
+            if key in value and not collection and not is_31:
                 invalid("暂不支持组合 Schema", location + "/" + key, "UNSUPPORTED_SCHEMA")
         if value.get("in") == "cookie":
             invalid("暂不支持 cookie 参数", location, "UNSUPPORTED_SCHEMA")

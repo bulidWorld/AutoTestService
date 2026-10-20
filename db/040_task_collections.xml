@@ -1,0 +1,138 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<database name="auto_test_service" dialect="postgresql" source="context/requirement/2-2.support_task_group/spec.md">
+  <tables>
+    <table name="task_collections" comment="项目级多任务组；无外键，归属及名称唯一由事务校验" if-not-exists="true">
+      <columns>
+        <column name="id" type="integer" comment="数据库生成的稳定 ID" nullable="false" identity="true"/>
+        <column name="project_id" type="integer" comment="所属项目" nullable="false"/>
+        <column name="name" type="varchar(120)" comment="去首尾空白后项目内区分大小写唯一" nullable="false"/>
+        <column name="description" type="varchar(2000)" comment="描述，缺省为空字符串" nullable="false"/>
+        <column name="created_at" type="timestamptz" comment="创建时间，业务写入" nullable="false"/>
+        <column name="updated_at" type="timestamptz" comment="更新时间，业务写入" nullable="false"/>
+      </columns>
+      <constraints>
+        <primary-key name="pk_task_collections" columns="id"/>
+      </constraints>
+      <indexes>
+        <index name="ix_task_collections_project_updated" if-not-exists="true">
+          <column name="project_id"/>
+          <column name="updated_at"/>
+          <column name="id"/>
+        </index>
+        <index name="ix_task_collections_project_name" if-not-exists="true">
+          <column name="project_id"/>
+          <column name="name"/>
+        </index>
+      </indexes>
+    </table>
+    <table name="task_collection_members" comment="任务组成员；同一任务仅一次；同序号并发，position 可重复且不要求连续" if-not-exists="true">
+      <columns>
+        <column name="collection_id" type="integer" comment="任务组 ID" nullable="false"/>
+        <column name="task_id" type="integer" comment="同项目任务 ID" nullable="false"/>
+        <column name="position" type="integer" comment="正整数执行批次；同值并发" nullable="false"/>
+      </columns>
+      <constraints>
+        <primary-key name="pk_task_collection_members" columns="collection_id,task_id"/>
+      </constraints>
+      <indexes>
+        <index name="ix_task_collection_members_order" if-not-exists="true">
+          <column name="collection_id"/>
+          <column name="position"/>
+          <column name="task_id"/>
+        </index>
+        <index name="ix_task_collection_members_task" if-not-exists="true">
+          <column name="task_id"/>
+        </index>
+      </indexes>
+    </table>
+    <table name="task_collection_runs" comment="任务组运行；独立参数上下文，配置快照不可变；无外键" if-not-exists="true">
+      <columns>
+        <column name="id" type="integer" comment="数据库生成的稳定 ID" nullable="false" identity="true"/>
+        <column name="collection_id" type="integer" comment="来源任务组，删除后保留" nullable="false"/>
+        <column name="project_id" type="integer" comment="项目 ID" nullable="false"/>
+        <column name="status" type="varchar(16)" comment="queued/running/succeeded/failed" nullable="false"/>
+        <column name="config_snapshot" type="jsonb" comment="任务组、成员批次、任务配置及接口定义完整快照；读取脱敏" nullable="false"/>
+        <column name="global_parameters" type="jsonb" comment="当前已提交参数映射，含 value/value_type/sensitive/source_task_id/source_run_id；禁止直接返回" nullable="false"/>
+        <column name="error_code" type="varchar(64)" comment="错误分类，含 EXECUTION_INTERRUPTED" nullable="true"/>
+        <column name="error_message" type="text" comment="脱敏错误说明" nullable="true"/>
+        <column name="created_at" type="timestamptz" comment="接受时间" nullable="false"/>
+        <column name="started_at" type="timestamptz" comment="开始时间" nullable="true"/>
+        <column name="finished_at" type="timestamptz" comment="结束时间" nullable="true"/>
+      </columns>
+      <constraints>
+        <primary-key name="pk_task_collection_runs" columns="id"/>
+      </constraints>
+      <indexes>
+        <index name="ix_task_collection_runs_history" if-not-exists="true">
+          <column name="project_id"/>
+          <column name="collection_id"/>
+          <column name="created_at"/>
+          <column name="id"/>
+        </index>
+        <index name="ix_task_collection_runs_status" if-not-exists="true">
+          <column name="status"/>
+        </index>
+      </indexes>
+    </table>
+    <table name="task_collection_run_members" comment="启动时预建所有成员；复用 task_runs 保存实际任务执行及请求详情" if-not-exists="true">
+      <columns>
+        <column name="collection_run_id" type="integer" comment="所属组运行" nullable="false"/>
+        <column name="task_id" type="integer" comment="任务 ID 快照" nullable="false"/>
+        <column name="position" type="integer" comment="批次快照" nullable="false"/>
+        <column name="task_run_id" type="integer" comment="启动事务预建的 task_runs.id；包含尚未调度成员" nullable="false"/>
+        <column name="status" type="varchar(16)" comment="pending/running/succeeded/failed/skipped" nullable="false"/>
+        <column name="input_parameters" type="jsonb" nullable="false" default="'{}'::jsonb" comment="批次开始时的共享参数快照；执行和历史脱敏使用，不直接返回"/>
+        <column name="ready" type="boolean" nullable="false" default="false" comment="批次输入已冻结，允许调度；与 pending/running 成员状态独立"/>
+      </columns>
+      <constraints>
+        <primary-key name="pk_task_collection_run_members" columns="collection_run_id,task_id"/>
+      </constraints>
+      <indexes>
+        <index name="ix_task_collection_run_members_order" if-not-exists="true">
+          <column name="collection_run_id"/>
+          <column name="position"/>
+          <column name="task_id"/>
+        </index>
+        <index name="ix_task_collection_run_members_run" if-not-exists="true">
+          <column name="task_run_id"/>
+        </index>
+      </indexes>
+    </table>
+    <table name="task_collection_parameter_overrides" comment="持久化覆盖审计；同一写入记录一次，事务提交后通过统一日志框架输出 ERROR；不存原值或新值" if-not-exists="true">
+      <columns>
+        <column name="id" type="integer" comment="数据库生成的稳定 ID" nullable="false" identity="true"/>
+        <column name="collection_run_id" type="integer" comment="任务组运行" nullable="false"/>
+        <column name="parameter_name" type="varchar(120)" comment="被覆盖参数名称" nullable="false"/>
+        <column name="old_task_id" type="integer" comment="原始写入任务 ID" nullable="false"/>
+        <column name="old_task_run_id" type="integer" comment="原始写入任务运行 ID" nullable="false"/>
+        <column name="new_task_id" type="integer" comment="新写入任务 ID" nullable="false"/>
+        <column name="new_task_run_id" type="integer" comment="新写入任务运行 ID" nullable="false"/>
+        <column name="created_at" type="timestamptz" comment="覆盖发生时间" nullable="false"/>
+        <column name="logged_at" type="timestamptz" nullable="true" comment="ERROR 日志投递时间；NULL 待投递，崩溃后可按审计 ID 重投"/>
+      </columns>
+      <constraints>
+        <primary-key name="pk_task_collection_parameter_overrides" columns="id"/>
+      </constraints>
+      <indexes>
+        <index name="ix_task_collection_parameter_overrides_run" if-not-exists="true">
+          <column name="collection_run_id"/>
+          <column name="id"/>
+        </index>
+      </indexes>
+    </table>
+  </tables>
+  <statements>
+    <statement id="collection-member-runtime-inputs">
+      <description>支持从首版设计表定义幂等升级运行期字段</description>
+      <sql>ALTER TABLE task_collection_run_members ADD COLUMN IF NOT EXISTS input_parameters jsonb NOT NULL DEFAULT '{}'::jsonb</sql>
+    </statement>
+    <statement id="collection-member-dispatch-ready">
+      <description>支持从首版设计表定义幂等升级运行期字段</description>
+      <sql>ALTER TABLE task_collection_run_members ADD COLUMN IF NOT EXISTS ready boolean NOT NULL DEFAULT false</sql>
+    </statement>
+    <statement id="collection-override-log-delivery">
+      <description>支持从首版设计表定义幂等升级运行期字段</description>
+      <sql>ALTER TABLE task_collection_parameter_overrides ADD COLUMN IF NOT EXISTS logged_at timestamptz</sql>
+    </statement>
+  </statements>
+</database>

@@ -72,6 +72,9 @@ def deleteProject(repository, path, query, body, upload):
     """DELETE /api/v1/projects/{project_id}"""
     pid = path["project_id"]
     repository.project(pid, lock=True)
+    from app.repository.rest_task_collection import delete_project_rows
+
+    delete_project_rows(repository, pid)
     ids = [
         r["id"]
         for r in repository.db.execute(

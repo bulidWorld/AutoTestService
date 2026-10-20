@@ -6,7 +6,7 @@ import math
 import re
 from urllib.parse import quote, urlencode, urlsplit
 
-from jsonschema import Draft4Validator
+from jsonschema import Draft4Validator, Draft202012Validator
 
 from app.service.assertions import validate_assertion
 from app.service.errors import BusinessError, invalid
@@ -63,6 +63,22 @@ def extract(document, expression, value_type, location):
     return current
 
 
+def schema_validator(schema, document):
+    validator = (
+        Draft202012Validator
+        if str(document.get("openapi", "")).startswith("3.1.")
+        else Draft4Validator
+    )
+    return validator(document).evolve(schema=schema)
+
+
+def schema_type(schema):
+    kind = schema.get("type") if isinstance(schema, dict) else None
+    if isinstance(kind, list):
+        return next((item for item in kind if item != "null"), "null")
+    return kind
+
+
 def validate_json(value, schema, document, location):
     # OpenAPI nullable is not a JSON Schema keyword; task bindings deliberately reject null.
     if value is None:
@@ -71,14 +87,14 @@ def validate_json(value, schema, document, location):
         json.dumps(value, allow_nan=False)
     except (ValueError, TypeError, OverflowError):
         invalid("绑定值必须为有限且可序列化的 JSON 值", location)
-    error = next(Draft4Validator(document).evolve(schema=schema).iter_errors(value), None)
+    error = next(schema_validator(schema, document).iter_errors(value), None)
     if error:
         invalid("绑定值不符合接口 Schema", location)
 
 
 def resolve_schema(schema, document):
     visited = set()
-    while "$ref" in schema:
+    while isinstance(schema, dict) and "$ref" in schema:
         ref = schema["$ref"]
         if ref in visited or not ref.startswith("#/"):
             invalid("无法解析 Schema 引用", "steps.bindings")
@@ -98,11 +114,11 @@ def pointer_schema(schema, pointer, document):
             invalid("JSON Pointer 转义无效", "steps.bindings.name")
         schema = resolve_schema(schema, document)
         key = part.replace("~1", "/").replace("~0", "~")
-        if schema.get("type") == "array" and key.isdecimal():
+        if schema_type(schema) == "array" and key.isdecimal():
             if int(key) > 10000:
                 invalid("数组下标过大", "steps.bindings.name")
             schema = schema.get("items", {})
-        elif schema.get("type") == "object" and key in schema.get("properties", {}):
+        elif schema_type(schema) == "object" and key in schema.get("properties", {}):
             schema = schema["properties"][key]
         else:
             invalid("JSON Pointer 未指向接口字段", "steps.bindings.name")
@@ -113,11 +129,15 @@ def sample(schema, document, depth=0):
     schema = resolve_schema(schema, document)
     if depth > 20:
         invalid("Schema 必填递归过深", "steps.bindings")
+    if isinstance(schema, bool):
+        return ""
+    if "const" in schema:
+        return schema["const"]
     if "default" in schema:
         return schema["default"]
     if schema.get("enum"):
         return schema["enum"][0]
-    kind = schema.get("type")
+    kind = schema_type(schema)
     if kind == "object":
         return {
             k: sample(schema["properties"][k], document, depth + 1)
@@ -129,7 +149,10 @@ def sample(schema, document, depth=0):
             for _ in range(schema.get("minItems", 0))
         ]
     if kind in ("integer", "number"):
-        return schema.get("minimum", 0) + (1 if schema.get("exclusiveMinimum") else 0)
+        exclusive = schema.get("exclusiveMinimum")
+        if str(document.get("openapi", "")).startswith("3.1.") and exclusive is not None:
+            return max(schema.get("minimum", exclusive), exclusive + 1)
+        return schema.get("minimum", 0) + (1 if exclusive else 0)
     return {"string": "x" * max(schema.get("minLength", 0), 1), "boolean": False}.get(kind, "")
 
 
@@ -138,14 +161,14 @@ def assign_body(body, pointer, value, schema, document):
         return value
     parts = [x.replace("~1", "/").replace("~0", "~") for x in pointer.split("/")[1:]]
     if body is None:
-        body = [] if resolve_schema(schema, document).get("type") == "array" else {}
+        body = [] if schema_type(resolve_schema(schema, document)) == "array" else {}
     current = body
     for i, key in enumerate(parts):
         last = i == len(parts) - 1
         target_schema = pointer_schema(
             schema, "/" + "/".join(pointer.split("/")[1 : i + 2]), document
         )
-        child = [] if target_schema.get("type") == "array" else {}
+        child = [] if schema_type(target_schema) == "array" else {}
         if isinstance(current, list):
             index = int(key)
             while len(current) <= index:
@@ -223,11 +246,13 @@ def build_request(task, step, values=None, declarations=None):
                     invalid("全局参数不存在或未初始化", "steps.bindings")
                 declaration = declarations[parameter_name]
                 kind = declaration["value_type"]
-                expected = schema.get("type")
+                expected = schema.get("type") if isinstance(schema, dict) else None
+                if isinstance(expected, str):
+                    expected = [expected]
                 if (
                     expected
-                    and kind != expected
-                    and not (kind == "integer" and expected == "number")
+                    and kind not in expected
+                    and not (kind == "integer" and "number" in expected)
                 ):
                     invalid("全局参数类型与接口字段不匹配", "steps.bindings")
                 if declaration["source_type"] == "fixed":
@@ -273,9 +298,7 @@ def build_request(task, step, values=None, declarations=None):
         invalid("路径参数未完整绑定", "steps.bindings")
     if bodydef:
         if body is not None and dynamic_body:
-            for error in (
-                Draft4Validator(document).evolve(schema=bodydef["schema"]).iter_errors(body)
-            ):
+            for error in schema_validator(bodydef["schema"], document).iter_errors(body):
                 if error.validator == "required":
                     invalid("缺少必填 JSON 字段", "steps.bindings")
         if body is None and bodydef.get("required"):
@@ -313,11 +336,9 @@ def stringify(value):
     return json.dumps(value, ensure_ascii=False) if isinstance(value, bool) else str(value)
 
 
-def validate_config(task, run=False):
+def validate_config(task, run=False, allow_collection_inputs=False):
     for index, step in enumerate(task["steps"]):
-        code = validate_assertion(
-            step.get("assertion_code"), f"body.steps.{index}.assertion_code"
-        )
+        code = validate_assertion(step.get("assertion_code"), f"body.steps.{index}.assertion_code")
         if "assertion_code" in step:
             step["assertion_code"] = code
     try:
@@ -349,7 +370,14 @@ def validate_config(task, run=False):
         if p["source_type"] == "fixed" and not TYPES[p["value_type"]](p.get("value")):
             invalid("固定参数类型不匹配或缺少值", f"body.global_parameters.{i}.value")
         declarations[p["name"]] = p
-    ready = {}
+    inherited_names = set(task.get("collection_available", []))
+    if allow_collection_inputs and not run:
+        # A saved draft may need a previous collection batch. Standalone starts and
+        # collection starts still require a proven producer before any HTTP request.
+        inherited_names.update(
+            p["name"] for p in declarations.values() if p["source_type"] == "rest"
+        )
+    ready = {n: declarations[n] for n in inherited_names if n in declarations}
     for kind, item in execution_plan(task):
         if kind == "parameter":
             ready[item["name"]] = item
@@ -380,7 +408,7 @@ def execution_plan(task):
 
 
 def sensitive_values(task, values=None):
-    result = []
+    result = [s for v in task.get("collection_secrets", []) for s in secret_strings(v)]
     for p in task["global_parameters"]:
         if p.get("sensitive"):
             value = (values or {}).get(p["name"], p.get("value"))
@@ -413,6 +441,9 @@ def secret_strings(value):
 
 def safe_task(task):
     result = copy.deepcopy(task)
+    result.pop("collection_secrets", None)
+    result.pop("collection_available", None)
+    result.pop("collection_run_id", None)
     for p in result["global_parameters"]:
         p.pop("task_id", None)
         p["redacted"] = bool(p.get("sensitive") and p["source_type"] == "fixed")

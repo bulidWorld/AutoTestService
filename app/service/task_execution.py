@@ -270,6 +270,14 @@ class RunExecutor:
                 if not row or row["status"] != "running":
                     return
                 config = row["config_snapshot"]
+                if "collection_run_id" in config:
+                    member = db.execute(
+                        "SELECT input_parameters FROM task_collection_run_members "
+                        "WHERE task_run_id=%s",
+                        (self.rid,),
+                    ).fetchone()
+                    inherited = member["input_parameters"]
+                    self.values = {n: p["value"] for n, p in inherited.items()}
             for kind, p in execution_plan(config):
                 if kind == "step":
                     self.responses[p["id"]] = self.execute_step(
@@ -386,6 +394,9 @@ class Dispatcher:
                         continue
                     # Recover only once per leadership acquisition, before dispatching any new work.
                     with db.transaction():
+                        from app.service.task_collections import recover
+
+                        recover(db, self.created_at)
                         unfinished = db.execute(
                             "SELECT id FROM task_runs WHERE status IN ('queued','running') AND created_at < %s FOR UPDATE",
                             (self.created_at,),
@@ -400,14 +411,36 @@ class Dispatcher:
                             )
                     while not self.stop.is_set():
                         self.workers = {rid: w for rid, w in self.workers.items() if w.is_alive()}
+                        from app.service.task_collections import advance, flush_audits
+
+                        with db.transaction():
+                            advance(db)
+                        with db.transaction():
+                            flush_audits(db)
                         if len(self.workers) < 8:
                             with db.transaction():
                                 row = db.execute(
-                                    "SELECT id FROM task_runs WHERE status='queued' ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1"
+                                    "SELECT r.id FROM task_runs r WHERE r.status='queued' AND ("
+                                    "NOT EXISTS(SELECT 1 FROM task_collection_run_members m "
+                                    "WHERE m.task_run_id=r.id) OR EXISTS("
+                                    "SELECT 1 FROM task_collection_run_members m "
+                                    "JOIN task_collection_runs c ON c.id=m.collection_run_id "
+                                    "WHERE m.task_run_id=r.id AND m.status='pending' AND m.ready "
+                                    "AND c.status='running' AND NOT EXISTS("
+                                    "SELECT 1 FROM task_collection_run_members peer "
+                                    "JOIN task_runs pr ON pr.id=peer.task_run_id "
+                                    "WHERE peer.collection_run_id=c.id AND peer.position=m.position "
+                                    "AND pr.status='failed'))) "
+                                    "ORDER BY r.created_at,r.id FOR UPDATE OF r SKIP LOCKED LIMIT 1"
                                 ).fetchone()
                                 if row:
                                     db.execute(
                                         "UPDATE task_runs SET status='running',started_at=now() WHERE id=%s",
+                                        (row["id"],),
+                                    )
+                                    db.execute(
+                                        "UPDATE task_collection_run_members SET status='running' "
+                                        "WHERE task_run_id=%s",
                                         (row["id"],),
                                     )
                             if row:

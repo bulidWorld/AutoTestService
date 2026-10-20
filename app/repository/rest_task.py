@@ -26,7 +26,32 @@ def task(repository, path, lock=False):
 def active(repository, tid):
     return (
         repository.one(
-            "SELECT id FROM task_runs WHERE task_id=%s AND status IN ('queued','running') LIMIT 1",
+            "SELECT id FROM task_runs WHERE task_id=%s AND status IN ('queued','running') "
+            "UNION ALL SELECT r.id FROM task_collection_run_members m "
+            "JOIN task_collection_runs r ON r.id=m.collection_run_id "
+            "WHERE m.task_id=%s AND r.status IN ('queued','running') LIMIT 1",
+            (tid, tid),
+        )
+        is not None
+    )
+
+
+def reserved(repository, tid):
+    return (
+        repository.one(
+            "SELECT r.id FROM task_collection_run_members m "
+            "JOIN task_collection_runs r ON r.id=m.collection_run_id "
+            "WHERE m.task_id=%s AND r.status IN ('queued','running') LIMIT 1",
+            (tid,),
+        )
+        is not None
+    )
+
+
+def referenced(repository, tid):
+    return (
+        repository.one(
+            "SELECT task_id FROM task_collection_members WHERE task_id=%s LIMIT 1",
             (tid,),
         )
         is not None
@@ -116,6 +141,8 @@ def save(repository, path, body, creating=False):
     existing = None if creating else configuration(repository, path)
     if existing:
         task(repository, path, lock=True)
+        if reserved(repository, existing["id"]):
+            raise BusinessError(409, "TASK_ACTIVE_RUN", "任务存在未结束运行或已被任务组预约")
     config = copy.deepcopy(body)
     config["project_id"] = pid
     config["name"] = config["name"].strip()
@@ -181,7 +208,7 @@ def save(repository, path, body, creating=False):
         source.pop("step_index")
         source["step_id"] = config["steps"][index]["id"]
     enrich(repository, config)
-    validate_config(config)
+    validate_config(config, allow_collection_inputs=True)
     if creating:
         row = repository.one(
             "INSERT INTO tasks(project_id,name,description,base_url,timeout_seconds) VALUES(%s,%s,%s,%s,%s) RETURNING *",
@@ -228,20 +255,6 @@ def save(repository, path, body, creating=False):
                 (*values, s["id"]),
             )
         step_ids[original_id] = s["id"]
-    # Remove memberships of deleted steps and keep remaining group order contiguous.
-    repository.db.execute(
-        "DELETE FROM task_group_steps WHERE group_id IN "
-        "(SELECT id FROM task_groups WHERE task_id=%s) AND NOT(step_id=ANY(%s))",
-        (tid, [s["id"] for s in config["steps"]]),
-    )
-    repository.db.execute(
-        "WITH ordered AS (SELECT m.group_id,m.step_id, "
-        "row_number() OVER (PARTITION BY m.group_id ORDER BY m.position) AS position "
-        "FROM task_group_steps m JOIN task_groups g ON g.id=m.group_id WHERE g.task_id=%s) "
-        "UPDATE task_group_steps m SET position=o.position FROM ordered o "
-        "WHERE m.group_id=o.group_id AND m.step_id=o.step_id",
-        (tid,),
-    )
     repository.db.execute(
         "DELETE FROM task_steps WHERE task_id=%s AND NOT(id=ANY(%s))",
         (tid, [s["id"] for s in config["steps"]]),
@@ -284,7 +297,7 @@ def save(repository, path, body, creating=False):
 def listTasks(repository, path, query, body, upload):
     repository.project(path["project_id"])
     return repository.page(
-        "SELECT t.*, (SELECT count(*) FROM task_steps WHERE task_id=t.id) AS step_count, EXISTS(SELECT 1 FROM task_runs WHERE task_id=t.id AND status IN ('queued','running')) AS has_active_run FROM tasks t WHERE project_id=%s AND strpos(lower(name),lower(%s))>0 ORDER BY updated_at DESC,id",
+        "SELECT t.*, (SELECT count(*) FROM task_steps WHERE task_id=t.id) AS step_count, (EXISTS(SELECT 1 FROM task_runs WHERE task_id=t.id AND status IN ('queued','running')) OR EXISTS(SELECT 1 FROM task_collection_run_members m JOIN task_collection_runs c ON c.id=m.collection_run_id WHERE m.task_id=t.id AND c.status IN ('queued','running'))) AS has_active_run FROM tasks t WHERE project_id=%s AND strpos(lower(name),lower(%s))>0 ORDER BY updated_at DESC,id",
         (path["project_id"], query.get("name", "")),
         query,
     )
@@ -375,30 +388,13 @@ def copyTask(repository, path, query, body, upload):
         if parameter["source_type"] == "rest":
             parameter["rest_source"]["step_id"] = mapping[parameter["rest_source"]["step_id"]]
     result = save(repository, dict(path, task_id=row["id"]), payload)
-    groups = repository.db.execute(
-        "SELECT * FROM task_groups WHERE task_id=%s ORDER BY id", (original["id"],)
-    ).fetchall()
-    for group in groups:
-        copied = repository.one(
-            "INSERT INTO task_groups(task_id,name,description) VALUES(%s,%s,%s) RETURNING id",
-            (row["id"], group["name"], group["description"]),
-        )
-        members = repository.db.execute(
-            "SELECT step_id,position FROM task_group_steps WHERE group_id=%s ORDER BY position",
-            (group["id"],),
-        ).fetchall()
-        for member in members:
-            repository.db.execute(
-                "INSERT INTO task_group_steps(group_id,step_id,position) VALUES(%s,%s,%s)",
-                (copied["id"], mapping[member["step_id"]], member["position"]),
-            )
     return result
 
 
 def previewTaskDeletion(repository, path, query, body, upload):
     row = task(repository, path)
     tid = row["id"]
-    blocked = active(repository, tid)
+    blocked = active(repository, tid) or referenced(repository, tid)
     counts = {}
     for key, sql in [
         ("step_count", "SELECT count(*) AS n FROM task_steps WHERE task_id=%s"),
@@ -413,29 +409,33 @@ def previewTaskDeletion(repository, path, query, body, upload):
         task_id=tid,
         **counts,
         can_delete=not blocked,
-        blocking_reasons=["存在未结束运行"] if blocked else [],
+        blocking_reasons=["存在未结束运行或被任务组引用"] if blocked else [],
     )
 
 
 def delete_task_rows(repository, tid):
     if active(repository, tid):
         raise BusinessError(409, "TASK_ACTIVE_RUN", "存在未结束运行，不能删除")
+    retained = "SELECT task_run_id FROM task_collection_run_members"
     for table in ["task_requests", "task_run_parameters", "task_run_steps"]:
         repository.db.execute(
-            f"DELETE FROM {table} WHERE run_id IN (SELECT id FROM task_runs WHERE task_id=%s)",
+            f"DELETE FROM {table} WHERE run_id IN (SELECT id FROM task_runs WHERE task_id=%s "
+            f"AND id NOT IN ({retained}))",
             (tid,),
         )
+    for table in ["task_steps", "task_parameters"]:
+        repository.db.execute(f"DELETE FROM {table} WHERE task_id=%s", (tid,))
     repository.db.execute(
-        "DELETE FROM task_group_steps WHERE group_id IN (SELECT id FROM task_groups WHERE task_id=%s)",
+        f"DELETE FROM task_runs WHERE task_id=%s AND id NOT IN ({retained})",
         (tid,),
     )
-    for table in ["task_groups", "task_runs", "task_steps", "task_parameters"]:
-        repository.db.execute(f"DELETE FROM {table} WHERE task_id=%s", (tid,))
     repository.db.execute("DELETE FROM tasks WHERE id=%s", (tid,))
 
 
 def deleteTask(repository, path, query, body, upload):
     task(repository, path, True)
+    if referenced(repository, path["task_id"]):
+        raise BusinessError(409, "TASK_REFERENCED", "任务被任务组引用，请先移除成员")
     delete_task_rows(repository, path["task_id"])
     return {"id": path["task_id"], "deleted": True}
 
@@ -443,7 +443,8 @@ def deleteTask(repository, path, query, body, upload):
 def validateTask(repository, path, query, body, upload):
     config = configuration(repository, path)
     try:
-        validate_config(config, body.get("mode", "run") == "run")
+        run_mode = body.get("mode", "run") == "run"
+        validate_config(config, run_mode, allow_collection_inputs=not run_mode)
     except BusinessError as exc:
         return {"valid": False, "issues": exc.payload["issues"]}
     return {"valid": True, "issues": []}
@@ -457,14 +458,14 @@ def startTaskRun(repository, path, query, body, upload):
     return create_run(repository, path, config)
 
 
-def create_run(repository, path, config, group_id=None):
+def create_run(repository, path, config):
     validate_config(config, True)
     from fastapi.encoders import jsonable_encoder
 
     config = jsonable_encoder(config)
     row = repository.one(
-        "INSERT INTO task_runs(task_id,project_id,group_id,config_snapshot) VALUES(%s,%s,%s,%s) RETURNING *",
-        (path["task_id"], path["project_id"], group_id, Jsonb(config)),
+        "INSERT INTO task_runs(task_id,project_id,config_snapshot) VALUES(%s,%s,%s) RETURNING *",
+        (path["task_id"], path["project_id"], Jsonb(config)),
     )
     for s in config["steps"]:
         repository.db.execute(
@@ -485,14 +486,16 @@ def create_run(repository, path, config, group_id=None):
             ),
         )
     row.pop("config_snapshot")
+    row.pop("group_id", None)
     return row
 
 
 def run(repository, path):
-    task(repository, path)
+    repository.project(path["project_id"])
     return required(
         repository.one(
-            "SELECT * FROM task_runs WHERE task_id=%s AND id=%s", (path["task_id"], path["run_id"])
+            "SELECT * FROM task_runs WHERE task_id=%s AND id=%s AND project_id=%s",
+            (path["task_id"], path["run_id"], path["project_id"]),
         )
     )
 
@@ -500,7 +503,7 @@ def run(repository, path):
 def listTaskRuns(repository, path, query, body, upload):
     task(repository, path)
     return repository.page(
-        "SELECT id,task_id,project_id,group_id,status,created_at,started_at,finished_at,duration_ms,error_code,error_message FROM task_runs WHERE task_id=%s AND (%s='' OR status=%s) ORDER BY created_at DESC,id DESC",
+        "SELECT id,task_id,project_id,status,created_at,started_at,finished_at,duration_ms,error_code,error_message FROM task_runs WHERE task_id=%s AND (%s='' OR status=%s) ORDER BY created_at DESC,id DESC",
         (path["task_id"], query.get("status", ""), query.get("status", "")),
         query,
     )
@@ -510,7 +513,8 @@ def getTaskRun(repository, path, query, body, upload):
     from app.service.task_config import scrub, sensitive_values
 
     row = run(repository, path)
-    config = row.pop("config_snapshot")
+    row.pop("group_id", None)
+    config = run_secrets(repository, row.pop("config_snapshot"), row["id"])
     parameters = repository.db.execute(
         "SELECT * FROM task_run_parameters WHERE run_id=%s ORDER BY position,id", (row["id"],)
     ).fetchall()
@@ -536,8 +540,6 @@ def getTaskRun(repository, path, query, body, upload):
             if p["sensitive"]
         ],
     }
-    if "group" in config:
-        snapshot["group"] = scrub(snapshot["task"].pop("group"), secrets)
     for parameter in parameters:
         if "value" in parameter:
             parameter["value"] = scrub(parameter["value"], secrets)
@@ -547,6 +549,19 @@ def getTaskRun(repository, path, query, body, upload):
         "steps": steps,
         "global_parameters": parameters,
     }
+
+
+def run_secrets(repository, config, rid):
+    if "collection_run_id" not in config:
+        return config
+    config = copy.deepcopy(config)
+    member = repository.one(
+        "SELECT input_parameters FROM task_collection_run_members WHERE task_run_id=%s",
+        (rid,),
+    )
+    inherited = member["input_parameters"] if member else {}
+    config["collection_secrets"] = [p["value"] for p in inherited.values() if p["sensitive"]]
+    return config
 
 
 def safe_request(repository, row, config):
@@ -559,6 +574,7 @@ def safe_request(repository, row, config):
             (row["run_id"],),
         )
     }
+    config = run_secrets(repository, config, row["run_id"])
     secrets = sensitive_values(config, values)
     for key in ["request_headers", "response_headers"]:
         if row[key] is not None:
