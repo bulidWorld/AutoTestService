@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 示意接口：先导入 GET /expires-check，接受 Expires 请求头。 -->
+<task name="执行时生成未来 EXPIRES">
+  <taskStep order="10">
+    <compute timezone="Asia/Shanghai">
+      <parameter valueType="string">
+        <name>EXPIRES</name><value>http_date(add_seconds(now(), 3600))</value>
+      </parameter>
+      <parameter valueType="string">
+        <name>executionDate</name><value>isoformat(today())</value>
+      </parameter>
+      <parameter valueType="integer">
+        <name>expiresAt</name><value>timestamp(add_seconds(now(), 3600))</value>
+      </parameter>
+    </compute>
+  </taskStep>
+  <taskStep order="20">
+    <rest method="GET" path="/expires-check">
+      <header><name>Expires</name><value>{EXPIRES}</value></header>
+      <assertionCode><![CDATA[
+def assert_response(responseBody, globalParam, statusCode, headers):
+    return statusCode == 200
+]]></assertionCode>
+    </rest>
+  </taskStep>
+</task>

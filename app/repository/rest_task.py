@@ -9,6 +9,7 @@ from psycopg.types.json import Jsonb
 from app.repository.projects import required
 from app.service.errors import BusinessError, invalid
 from app.service.task_config import safe_task, validate_config
+from app.service.task_nodes import REST_FIELDS, empty_stats, preorder, siblings
 
 SYSTEM_OPERATIONS = set()
 
@@ -69,6 +70,7 @@ def configuration(repository, path):
     ).fetchall()
     result["global_parameters"], result["steps"] = params, steps
     enrich(repository, result)
+    result["steps"] = list(preorder(result))
     return result
 
 
@@ -79,6 +81,13 @@ def enrich(repository, config):
         if p.get("source_type") == "rest" and p.get("rest_source") and "step_id" in p["rest_source"]
     }
     for s in config["steps"]:
+        for key in ("wait_milliseconds", "max_concurrency", "raw_body"):
+            if s.get(key) is None:
+                s.pop(key, None)
+        if s["step_type"] != "rest":
+            for key in REST_FIELDS:
+                s.pop(key, None)
+            continue
         f = required(
             repository.one(
                 "SELECT * FROM yaml_files WHERE id=%s AND project_id=%s",
@@ -105,14 +114,21 @@ def enrich(repository, config):
             has_new_version=f["current_version"] > s["version"],
             method=interface["method"],
             path=interface["path"],
-            execution_phase="parameters" if s["id"] in sources else "steps",
+            execution_phase="finally"
+            if s["execution_scope"] == "finally"
+            else ("parameters" if s["id"] in sources else "steps"),
         )
     by_id = {s["id"]: s for s in config["steps"]}
     for p in config["global_parameters"]:
+        if p.get("source_type") == "expression":
+            p.pop("value", None)
+            p.pop("rest_source", None)
+            continue
+        p.pop("expression_source", None)
         if p.get("source_type") == "rest":
             source = p.get("rest_source") or {}
             s = by_id.get(source.get("step_id"))
-            if s:
+            if s and s["step_type"] == "rest":
                 p.update(
                     interface_name=s["interface"]["summary"] or s["method"] + " " + s["path"],
                     file_name=s["file_name"],
@@ -141,7 +157,7 @@ def save(repository, path, body, creating=False):
     existing = None if creating else configuration(repository, path)
     if existing:
         task(repository, path, lock=True)
-        if reserved(repository, existing["id"]):
+        if active(repository, existing["id"]):
             raise BusinessError(409, "TASK_ACTIVE_RUN", "任务存在未结束运行或已被任务组预约")
     config = copy.deepcopy(body)
     config["project_id"] = pid
@@ -163,47 +179,76 @@ def save(repository, path, body, creating=False):
             ):
                 invalid("必须提供固定参数值", "body.global_parameters")
             p["value"] = old["value"]
-    safe_steps = {step["id"]: step for step in safe_task(existing)["steps"]} if existing else {}
+    safe_steps = {s["id"]: s for s in safe_task(existing)["steps"]} if existing else {}
     used = set()
     for i, s in enumerate(config["steps"]):
+        if "parent_step_index" in s and "parent_step_id" in s:
+            invalid("父 ID 与父下标只能指定一个", f"body.steps.{i}.parent_step_index")
+        s.setdefault("parent_step_id", None)
         if "id" in s:
             if s["id"] not in oldsteps or s["id"] in used:
-                invalid("步骤 ID 重复或不属于当前任务", "body.steps")
+                invalid("步骤 ID 重复或不属于当前任务", f"body.steps.{i}.id")
             used.add(s["id"])
-            previous = {
-                (f["location"], f["name"]): f["binding"] for f in oldsteps[s["id"]]["bindings"]
-            }
-            for f in s["bindings"]:
-                if f["binding"]["kind"] == "literal" and "value" not in f["binding"]:
-                    old = previous.get((f["location"], f["name"]))
-                    safe_binding = next(
-                        (
-                            field["binding"]
-                            for field in safe_steps[s["id"]]["bindings"]
-                            if field["location"] == f["location"] and field["name"] == f["name"]
-                        ),
-                        {},
-                    )
-                    if (
-                        not old
-                        or old["kind"] != "literal"
-                        or not safe_binding.get("redacted")
-                        or oldsteps[s["id"]]["interface_id"] != s["interface_id"]
-                    ):
-                        invalid("必须提供字面值", "body.steps.bindings")
-                    f["binding"]["value"] = old["value"]
+            oldstep = oldsteps[s["id"]]
+            for container in ("bindings", "headers"):
+                oldfields = {
+                    (
+                        f.get("location"),
+                        f["name"].lower() if container == "headers" else f["name"],
+                    ): f["binding"]
+                    for f in oldstep.get(container, [])
+                }
+                safefields = {
+                    (
+                        f.get("location"),
+                        f["name"].lower() if container == "headers" else f["name"],
+                    ): f["binding"]
+                    for f in safe_steps[s["id"]].get(container, [])
+                }
+                for f in s.get(container, []):
+                    binding = f["binding"]
+                    if binding["kind"] == "literal" and "value" not in binding:
+                        key = (
+                            f.get("location"),
+                            f["name"].lower() if container == "headers" else f["name"],
+                        )
+                        previous = oldfields.get(key, {})
+                        if (
+                            not safefields.get(key, {}).get("redacted")
+                            or previous.get("kind") != "literal"
+                            or s.get("interface_id") != oldstep.get("interface_id")
+                        ):
+                            invalid("必须提供字面值", f"body.steps.{i}.{container}")
+                        binding["value"] = previous["value"]
         else:
             s["id"] = -(i + 1)
-        s["position"] = i + 1
+        if s.get("step_type") == "rest":
+            s.setdefault("headers", [])
+    for i, s in enumerate(config["steps"]):
+        if "parent_step_index" not in s:
+            continue
+        index = s.pop("parent_step_index")
+        if (
+            s["parent_step_id"] is not None
+            or type(index) is not int
+            or not 0 <= index < len(config["steps"])
+        ):
+            invalid("父下标无效或同时指定父 ID", f"body.steps.{i}.parent_step_index")
+        s["parent_step_id"] = config["steps"][index]["id"]
     for i, p in enumerate(config["global_parameters"]):
-        source = p.get("rest_source")
-        if p["source_type"] != "rest" or not source or "step_index" not in source:
+        field = "expression_source" if p["source_type"] == "expression" else "rest_source"
+        source = p.get(field)
+        if (
+            p["source_type"] not in {"rest", "expression"}
+            or not source
+            or "step_index" not in source
+        ):
             continue
         index = source["step_index"]
         if "step_id" in source or type(index) is not int or not 0 <= index < len(config["steps"]):
             invalid(
                 "来源步骤下标无效或同时指定了步骤 ID",
-                f"body.global_parameters.{i}.rest_source.step_index",
+                f"body.global_parameters.{i}.{field}.step_index",
             )
         source.pop("step_index")
         source["step_id"] = config["steps"][index]["id"]
@@ -235,34 +280,69 @@ def save(repository, path, body, creating=False):
     step_ids = {}
     for s in config["steps"]:
         original_id = s["id"]
-        values = (
+        columns = [
+            "task_id",
+            "position",
+            "step_type",
+            "execution_scope",
+            "interface_id",
+            "file_id",
+            "version",
+            "bindings",
+            "headers",
+            "raw_body",
+            "assertion_code",
+            "wait_milliseconds",
+            "max_concurrency",
+            "options",
+        ]
+        values = [
             tid,
             s["position"],
-            s["interface_id"],
-            s["file_id"],
-            s["version"],
-            Jsonb(s["bindings"]),
+            s["step_type"],
+            s["execution_scope"],
+            s.get("interface_id"),
+            s.get("file_id"),
+            s.get("version"),
+            Jsonb(s.get("bindings", [])),
+            Jsonb(s.get("headers", [])),
+            Jsonb(s["raw_body"]) if "raw_body" in s else None,
             s.get("assertion_code"),
-        )
-        if s["id"] < 0:
+            s.get("wait_milliseconds"),
+            s.get("max_concurrency"),
+            Jsonb(s.get("options") or {}),
+        ]
+        if original_id < 0:
             s["id"] = repository.one(
-                "INSERT INTO task_steps(task_id,position,interface_id,file_id,version,bindings,assertion_code) VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                "INSERT INTO task_steps("
+                + ",".join(columns)
+                + ") VALUES("
+                + ",".join(["%s"] * len(columns))
+                + ") RETURNING id",
                 values,
             )["id"]
         else:
             repository.db.execute(
-                "UPDATE task_steps SET task_id=%s,position=%s,interface_id=%s,file_id=%s,version=%s,bindings=%s,assertion_code=%s,updated_at=now() WHERE id=%s",
-                (*values, s["id"]),
+                "UPDATE task_steps SET "
+                + ",".join(c + "=%s" for c in columns)
+                + ",updated_at=now() WHERE id=%s",
+                (*values, original_id),
             )
         step_ids[original_id] = s["id"]
+    for s in config["steps"]:
+        parent = s.get("parent_step_id")
+        repository.db.execute(
+            "UPDATE task_steps SET parent_step_id=%s WHERE id=%s",
+            (step_ids[parent] if parent is not None else None, s["id"]),
+        )
     repository.db.execute(
         "DELETE FROM task_steps WHERE task_id=%s AND NOT(id=ANY(%s))",
         (tid, [s["id"] for s in config["steps"]]),
     )
     parameter_ids = []
     for i, p in enumerate(config["global_parameters"]):
-        if p["source_type"] == "rest":
-            source = p["rest_source"]
+        if p["source_type"] in {"rest", "expression"}:
+            source = p["expression_source" if p["source_type"] == "expression" else "rest_source"]
             source["step_id"] = step_ids[source["step_id"]]
         values = (
             tid,
@@ -273,25 +353,27 @@ def save(repository, path, body, creating=False):
             i + 1,
             p["source_type"],
             Jsonb(p["rest_source"]) if p["source_type"] == "rest" else None,
+            Jsonb(p["expression_source"]) if p["source_type"] == "expression" else None,
         )
         old = oldparams.get(p["name"])
         if old:
             repository.db.execute(
-                "UPDATE task_parameters SET task_id=%s,name=%s,value_type=%s,value=%s,sensitive=%s,position=%s,source_type=%s,rest_source=%s WHERE id=%s",
+                "UPDATE task_parameters SET task_id=%s,name=%s,value_type=%s,value=%s,sensitive=%s,position=%s,source_type=%s,rest_source=%s,expression_source=%s WHERE id=%s",
                 (*values, old["id"]),
             )
             parameter_ids.append(old["id"])
         else:
             parameter_ids.append(
                 repository.one(
-                    "INSERT INTO task_parameters(task_id,name,value_type,value,sensitive,position,source_type,rest_source) VALUES(%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                    "INSERT INTO task_parameters(task_id,name,value_type,value,sensitive,position,source_type,rest_source,expression_source) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                     values,
                 )["id"]
             )
     repository.db.execute(
         "DELETE FROM task_parameters WHERE task_id=%s AND NOT(id=ANY(%s))", (tid, parameter_ids)
     )
-    return safe_task(configuration(repository, dict(path, task_id=tid)))
+    result = safe_task(configuration(repository, dict(path, task_id=tid)))
+    return result
 
 
 def listTasks(repository, path, query, body, upload):
@@ -304,7 +386,7 @@ def listTasks(repository, path, query, body, upload):
 
 
 def importTask(repository, path, query, body, upload):
-    from app.service.task_import import convert
+    from app.service.task_import import convert, file_issue
 
     repository.project(path["project_id"], lock=True)
 
@@ -325,8 +407,39 @@ def importTask(repository, path, query, body, upload):
         )
         return interface, version["parsed_document"]
 
-    config = convert(upload, body["base_url"], lookup)
-    return save(repository, path, config, creating=True)
+    tasks = []
+    for index, (filename, root) in enumerate(upload):
+        try:
+            tasks.append(
+                save(repository, path, convert(root, body["base_url"], lookup), creating=True)
+            )
+        except BusinessError as exc:
+            import re
+
+            for issue in exc.payload["issues"]:
+                match = re.search(r"body.steps\.(\d+)", issue["location"])
+                if match:
+                    elements = []
+
+                    def collect(container, elements=elements):
+                        for node in sorted(
+                            container.findall("taskStep"), key=lambda n: int(n.get("order"))
+                        ):
+                            elements.append(node)
+                            parallel = node.find("parallel")
+                            if parallel is not None:
+                                collect(parallel)
+
+                    collect(root)
+                    cleanup = root.find("finally")
+                    if cleanup is not None:
+                        collect(cleanup)
+                    node = elements[int(match.group(1))]
+                    issue["location"] = (
+                        root.getroottree().getpath(node) + f" (line {node.sourceline})"
+                    )
+            raise file_issue(index, filename, exc) from None
+    return tasks
 
 
 def createTask(repository, path, query, body, upload):
@@ -345,50 +458,31 @@ def copyTask(repository, path, query, body, upload):
     repository.project(path["project_id"], lock=True)
     original = configuration(repository, path)
     task_name(repository, path["project_id"], body["name"])
-    row = repository.one(
-        "INSERT INTO tasks(project_id,name,description,base_url,timeout_seconds) VALUES(%s,%s,%s,%s,%s) RETURNING id",
-        (
-            path["project_id"],
-            body["name"],
-            original["description"],
-            original["base_url"],
-            original["timeout_seconds"],
-        ),
-    )
-    mapping = {}
-    for step in original["steps"]:
-        inserted = repository.one(
-            "INSERT INTO task_steps(task_id,position,interface_id,file_id,version,bindings,assertion_code) VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-            (
-                row["id"],
-                step["position"],
-                step["interface_id"],
-                step["file_id"],
-                step["version"],
-                Jsonb(step["bindings"]),
-                step.get("assertion_code"),
-            ),
-        )
-        mapping[step["id"]] = inserted["id"]
     payload = {
         key: copy.deepcopy(original[key])
-        for key in [
+        for key in (
             "name",
             "description",
             "base_url",
             "timeout_seconds",
             "global_parameters",
             "steps",
-        ]
+        )
     }
     payload["name"] = body["name"]
+    indices = {s["id"]: i for i, s in enumerate(payload["steps"])}
     for step in payload["steps"]:
-        step["id"] = mapping[step["id"]]
+        step.pop("id")
+        parent = step.pop("parent_step_id", None)
+        if parent is not None:
+            step["parent_step_index"] = indices[parent]
     for parameter in payload["global_parameters"]:
-        if parameter["source_type"] == "rest":
-            parameter["rest_source"]["step_id"] = mapping[parameter["rest_source"]["step_id"]]
-    result = save(repository, dict(path, task_id=row["id"]), payload)
-    return result
+        if parameter["source_type"] in {"rest", "expression"}:
+            source = parameter[
+                "expression_source" if parameter["source_type"] == "expression" else "rest_source"
+            ]
+            source["step_index"] = indices[source.pop("step_id")]
+    return save(repository, path, payload, creating=True)
 
 
 def previewTaskDeletion(repository, path, query, body, upload):
@@ -467,11 +561,31 @@ def create_run(repository, path, config):
         "INSERT INTO task_runs(task_id,project_id,config_snapshot) VALUES(%s,%s,%s) RETURNING *",
         (path["task_id"], path["project_id"], Jsonb(config)),
     )
+    runtime_ids = {}
     for s in config["steps"]:
-        repository.db.execute(
-            "INSERT INTO task_run_steps(run_id,step_id,position) VALUES(%s,%s,%s)",
-            (row["id"], s["id"], s["position"]),
+        stats = (
+            empty_stats(sum(c["step_type"] == "rest" for c in siblings(config, parent=s["id"])))
+            if s["step_type"] == "parallel"
+            else None
         )
+        node = repository.one(
+            "INSERT INTO task_run_steps(run_id,step_id,position,step_type,execution_scope,parallel_stats) VALUES(%s,%s,%s,%s,%s,%s) RETURNING id",
+            (
+                row["id"],
+                s["id"],
+                s["position"],
+                s["step_type"],
+                s["execution_scope"],
+                Jsonb(stats) if stats is not None else None,
+            ),
+        )
+        runtime_ids[s["id"]] = node["id"]
+    for s in config["steps"]:
+        if s.get("parent_step_id") is not None:
+            repository.db.execute(
+                "UPDATE task_run_steps SET parent_run_step_id=%s WHERE id=%s",
+                (runtime_ids[s["parent_step_id"]], runtime_ids[s["id"]]),
+            )
     for p in config["global_parameters"]:
         repository.db.execute(
             "INSERT INTO task_run_parameters(run_id,parameter_id,name,position,source_type,value_type,sensitive,status) VALUES(%s,%s,%s,%s,%s,%s,%s,'pending')",
@@ -487,7 +601,7 @@ def create_run(repository, path, config):
         )
     row.pop("config_snapshot")
     row.pop("group_id", None)
-    return row
+    return public_run(row)
 
 
 def run(repository, path):
@@ -500,13 +614,22 @@ def run(repository, path):
     )
 
 
+def public_run(row):
+    code = row.pop("primary_error_code", None)
+    message = row.pop("primary_error_message", None)
+    row["primary_error"] = {"code": code, "message": message} if code else None
+    return row
+
+
 def listTaskRuns(repository, path, query, body, upload):
     task(repository, path)
-    return repository.page(
-        "SELECT id,task_id,project_id,status,created_at,started_at,finished_at,duration_ms,error_code,error_message FROM task_runs WHERE task_id=%s AND (%s='' OR status=%s) ORDER BY created_at DESC,id DESC",
+    page = repository.page(
+        "SELECT id,task_id,project_id,status,execution_stage,cleanup_status,primary_error_code,primary_error_message,created_at,started_at,finished_at,duration_ms,error_code,error_message FROM task_runs WHERE task_id=%s AND (%s='' OR status=%s) ORDER BY created_at DESC,id DESC",
         (path["task_id"], query.get("status", ""), query.get("status", "")),
         query,
     )
+    page["items"] = [public_run(row) for row in page["items"]]
+    return page
 
 
 def getTaskRun(repository, path, query, body, upload):
@@ -533,7 +656,11 @@ def getTaskRun(repository, path, query, body, upload):
 
     snapshot = {
         "task": safe_task(config),
-        "interface_definitions": [scrub(redact(s["interface"]), secrets) for s in config["steps"]],
+        "interface_definitions": [
+            scrub(redact(s["interface"]), secrets)
+            for s in config["steps"]
+            if s["step_type"] == "rest"
+        ],
         "redacted_paths": [
             "/task/global_parameters/" + str(i) + "/value"
             for i, p in enumerate(config["global_parameters"])
@@ -543,11 +670,59 @@ def getTaskRun(repository, path, query, body, upload):
     for parameter in parameters:
         if "value" in parameter:
             parameter["value"] = scrub(parameter["value"], secrets)
+    counts = {
+        key: {
+            "total": 0,
+            "pending": 0,
+            "running": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "blocked": 0,
+            "skipped": 0,
+        }
+        for key in ("leaf_counts", "control_counts")
+    }
+    by_step = {s["step_id"]: s for s in steps}
+    request_count = repository.one(
+        "SELECT count(*) AS n FROM task_requests WHERE run_id=%s", (row["id"],)
+    )["n"]
+    for node in steps:
+        group = counts["control_counts" if node["step_type"] == "parallel" else "leaf_counts"]
+        group["total"] += 1
+        group[node["status"]] += 1
+        if node["step_type"] == "parallel":
+            request_count += (node["parallel_stats"] or {}).get("request_count", 0)
+    visible = []
+    for node in preorder(config):
+        result = by_step[node["id"]]
+        if result["parent_run_step_id"] is not None:
+            continue
+        result.pop("run_id", None)
+        result["runId"] = result.pop("step_run_id")
+        if result["step_type"] != "parallel":
+            result.pop("parallel_stats", None)
+        else:
+            failures = sorted(
+                (
+                    s
+                    for s in steps
+                    if s["parent_run_step_id"] == result["id"]
+                    and s["status"] in {"failed", "blocked"}
+                ),
+                key=lambda s: (s["position"], s["id"]),
+            )
+            result["failed_child_step_id"] = failures[0]["step_id"] if failures else None
+            result["child_error_code"] = failures[0]["error_code"] if failures else None
+            result["failed_child_runId"] = failures[0]["step_run_id"] if failures else None
+            result["child_error_message"] = failures[0]["error_message"] if failures else None
+        visible.append(result)
     return {
-        "run": row,
+        "run": public_run(row),
         "config_snapshot": snapshot,
-        "steps": steps,
+        "steps": visible,
         "global_parameters": parameters,
+        **counts,
+        "request_count": request_count,
     }
 
 
@@ -574,6 +749,8 @@ def safe_request(repository, row, config):
             (row["run_id"],),
         )
     }
+    node = repository.one("SELECT step_run_id FROM task_run_steps WHERE id=%s", (row["run_step_id"],))
+    row["runId"] = node["step_run_id"] if node else None
     config = run_secrets(repository, config, row["run_id"])
     secrets = sensitive_values(config, values)
     for key in ["request_headers", "response_headers"]:
@@ -583,13 +760,15 @@ def safe_request(repository, row, config):
                 if h["redacted"]:
                     secrets.append(h["value"])
                     h["value"] = "***"
+    raw_step = next((s for s in config["steps"] if s["id"] == row["step_id"]), {})
+    raw = "raw_body" in raw_step
+    row.pop("run_parameter_id", None)
     row.pop("redaction_metadata", None)
     original = copy.deepcopy(row)
+    from app.service.task_nodes import parameter_sources
+
     source_sensitive = any(
-        p.get("sensitive")
-        and p.get("source_type") == "rest"
-        and p.get("rest_source", {}).get("step_id") == row["step_id"]
-        for p in config["global_parameters"]
+        p.get("sensitive") for p in parameter_sources(config).get(row["step_id"], [])
     )
     if source_sensitive and row["response_body"] is not None:
         # Covers values that failed extraction/type validation and were never persisted.
@@ -599,7 +778,7 @@ def safe_request(repository, row, config):
     else:
         from app.service.openapi_import import redact
 
-        for key in ["request_body", "response_body"]:
+        for key in ["response_body"] if raw else ["request_body", "response_body"]:
             if row[key]:
                 try:
                     parsed = json.loads(row[key])
@@ -617,7 +796,8 @@ def safe_request(repository, row, config):
         "request_headers",
         "response_headers",
     ]:
-        result[key] = scrub(result[key], secrets)
+        if key != "request_body" or not raw:
+            result[key] = scrub(result[key], secrets)
     for key in ["request_headers", "response_headers"]:
         if result[key] is not None:
             for old, safe in zip(row[key], result[key]):
@@ -631,7 +811,7 @@ def safe_request(repository, row, config):
 def listRunRequests(repository, path, query, body, upload):
     r = run(repository, path)
     result = repository.page(
-        "SELECT * FROM task_requests WHERE run_id=%s ORDER BY CASE phase WHEN 'parameters' THEN 0 ELSE 1 END,position,id",
+        "SELECT * FROM task_requests WHERE run_id=%s ORDER BY CASE phase WHEN 'parameters' THEN 0 WHEN 'steps' THEN 1 ELSE 2 END,position,id",
         (r["id"],),
         query,
     )

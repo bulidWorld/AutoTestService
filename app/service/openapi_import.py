@@ -126,9 +126,6 @@ def parse_upload(filename, content):
                     return {"allOf": [resolved, siblings]}
                 return {**resolved, **siblings}
             return resolved
-        for key in ("oneOf", "anyOf", "allOf", "not"):
-            if key in value and not collection and not is_31:
-                invalid("暂不支持组合 Schema", location + "/" + key, "UNSUPPORTED_SCHEMA")
         if value.get("in") == "cookie":
             invalid("暂不支持 cookie 参数", location, "UNSUPPORTED_SCHEMA")
         return {k: expand(v, location + "/" + pointer(k), stack) for k, v in value.items()}

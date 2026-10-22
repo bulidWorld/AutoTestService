@@ -320,24 +320,35 @@ XML 放在 `db/`，格式遵循 `db/database.xsd`；`db_sync.sh`、`db_init.sh`�
 
 ## 日志与验证
 
+任务 XML/API 的鉴权、条件清理、会话更新、动态等待、负向路径查询和阻塞策略见
+[任务执行语义（G1～G6）](docs/task-execution-semantics.md)。
+实际未来 EXPIRES 使用 [compute 表达式参数](docs/task-expression-parameters.md)，在节点执行时求值。
+
 任务步骤可配置 `assertion_code`，代码须包含标准 Python 入口并返回 `bool`：
 
 ```python
-def assert_response(responseBody, globalParam):
-    return responseBody["items"][0]["id"] == globalParam["T1"]
+def assert_response(responseBody, globalParam, statusCode, headers):
+    return statusCode == 200 and responseBody["items"][0]["id"] == globalParam["T1"]
 ```
 
-`responseBody` 是 JSON 解析结果，`globalParam` 仅包含当前步骤执行前已初始化的参数。
-断言在当前步骤参数提取前执行，返回值替代 HTTP 2xx 判定；未设置、`null`、空串或空白
+`statusCode` 是真实 HTTP 状态码整数，可精确比较 200、400、401 等；响应体的业务 `code` 需要单独核对。
+`headers` 是小写响应头名到字符串列表的映射，保留同名头的出现顺序，例如
+`headers.get("content-type", []) == ["application/json"]`，缺失的头不会出现在映射中。
+`responseBody` 是 JSON 解析结果；空响应或非 JSON 响应传入 `None`，仍可断言状态及响应头。
+`globalParam` 仅包含当前步骤执行前已初始化的参数。入口必须使用上述四个参数，
+main、parallel 子 REST 和 finally 清理 REST 规则相同。
+参数提取与断言判定独立；断言读取当前步骤执行前的参数快照，返回值替代 HTTP 2xx 判定；未设置、`null`、空串或空白
 表示按 HTTP 2xx 判断，完整保存时省略该字段会清除旧代码。复制任务和运行快照保留代码。
-入口不能命名为 `assert`，它是 Python 保留字；JSON 对象使用 `body["id"]` 访问字段。
+入口不能命名为 `assert`，它是 Python 保留字；JSON 对象使用 `responseBody["id"]` 访问字段。
 
 保存及运行前校验代码语法和入口，不执行代码。支持同步 Python 计算、辅助函数、条件、循环
 及常用内置函数；不支持导入模块、文件操作、类、私有属性、装饰器、类型注解和默认参数。
 代码最多 16000 字符，独立进程执行，CPU 上限 2 秒、总等待上限 3 秒、内存上限 256 MiB。
 断言失败、执行异常或超限、非布尔返回值分别记录 `ASSERTION_FAILED`、
-`ASSERTION_EXECUTION_ERROR`、`ASSERTION_RETURN_TYPE_ERROR`；非 JSON 响应记录
-`RESPONSE_NOT_JSON`。连接失败或 HTTP 超时不执行断言。步骤失败后停止运行并跳过后续步骤。
+`ASSERTION_EXECUTION_ERROR`、`ASSERTION_RETURN_TYPE_ERROR`。断言失败仍发布响应参数，供 `finally` 清理使用；每个参数独立提取，
+字段缺失、类型不匹配、非 JSON 或无可用响应时赋 `null`（Python `None`），不使来源步骤失败。
+`finally` REST 也可声明 `extractParam`，后续清理步骤可引用其赋值；清理断言失败同样不影响提取。
+并发组在已启动子节点收尾后发布赋值，屏障失败也保留这些值；未启动的来源不发布。连接失败或 HTTP 超时不执行断言。主流程步骤失败后跳过后续主流程，等待已启动并发子节点收尾后尝试全部 finally，清理结束才终结任务。
 
 升级已有数据库执行 `bash scripts/db_sync.sh`，为 `task_steps` 增加可空的
 `assertion_code` 列；`start.sh` 也会自动同步。重启后新代码生效。
@@ -356,7 +367,7 @@ for script in scripts/*.sh; do bash -n "$script"; done
 更新，验证新增、修改、移除接口及历史版本保留。`invalid.yaml` 用于验证错误定位与失败回滚。
 文件限制为 UTF-8、OpenAPI 3.0.x 或 3.1.x、5 MiB；不支持的结构返回错误及 JSON Pointer。
 
-OpenAPI 3.1 导入保留组合 Schema、null 类型、const 和数值形式的 exclusiveMinimum 等约束；执行绑定按 JSON Schema 2020-12 校验。仍仅支持文件内 components 引用及 JSON/multipart 请求体，绑定值仍不得为 null。复杂组合请求体可通过根 JSON Pointer（空字符串）整体绑定。
+导入保留组合 Schema（oneOf、anyOf、allOf、not），执行绑定按对应 JSON Schema 版本校验（3.0 按 Draft 4，3.1 按 2020-12）；OpenAPI 3.1 额外保留 null 类型、const 和数值形式的 exclusiveMinimum 等约束。仍仅支持文件内 components 引用及 JSON/multipart 请求体，绑定值仍不得为 null。复杂组合请求体可通过根 JSON Pointer（空字符串）整体绑定。
 查看版本内容会重新输出脱敏后的 YAML，因此不保留原始排版及注释。
 删除操作先查询影响范围并二次确认；阶段一任务和运行计数为 0。
 
@@ -383,3 +394,18 @@ AUTOTEST_DB_TESTS=1 .venv/bin/pytest -q
 ```bash
 rg '响应头中的请求ID' /var/service/log/auto-test-service/*.log
 ```
+
+
+任务配置现使用统一 rest/wait/parallel 执行树与 finally，headers 独立于 path/query/body 绑定。
+原始 JSON 文本使用 raw_body.text；XML 使用独立 pathParams、queryParams、body 或 rawBody，
+不再接受 kv location。执行语义、并发统计与迁移要求见 [任务业务说明](docs/task-business.md)。
+
+### 步骤运行诊断
+
+每个持久化步骤运行具有 UUID `runId`，运行详情的 `steps[].runId` 与 JSON 日志 `runId` 一致；
+日志另含 `task_run_id`、`task_step_id`、`stage`。REST 请求、参数提取、断言及终态共用步骤 runId，
+并发子步骤拥有独立 runId。参数预览也生成步骤 runId（仅在本次预览日志中使用）。
+失败的 `error_message` 包含步骤 ID、runId、阶段及断言异常类型、函数/行号堆栈；
+不记录异常原文、源码行或局部变量。超时与子进程异常退出分别提示，退出原因无法精确区分时明确说明。
+并发父节点提供 `failed_child_runId`、`child_error_message`，请求详情也带 `runId`。
+升级时执行 `bash scripts/db_sync.sh` 并重启服务。旧运行可补齐标识，但不会补生成历史执行日志。

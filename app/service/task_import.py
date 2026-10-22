@@ -7,9 +7,26 @@ from lxml import etree
 
 from app.service.errors import BusinessError, invalid
 from app.service.openapi_import import MAX_BYTES, pointer
-from app.service.task_config import TYPES, resolve_schema
+from app.service.task_config import TYPES, global_binding_name
 
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "docs/task.xsd"
+MAX_TASK_FILES = 20
+
+
+def file_issue(index, filename, exc):
+    """Rewrap a per-file BusinessError with the file identity in its location."""
+    issues = exc.payload["issues"]
+    location = issues[0]["location"] if issues else None
+    if location is None:
+        return exc
+    prefix = f"body.file.{index} ({filename})"
+    if location == "body.file" or location.startswith("body.file "):
+        location = prefix + location[len("body.file"):]
+    elif location.startswith("body."):
+        location = prefix + "." + location[len("body."):]
+    else:
+        location = f"{prefix}: {location}"
+    return BusinessError(exc.status, exc.payload["code"], exc.payload["detail"], location)
 
 
 def parse_upload(filename, content):
@@ -25,10 +42,14 @@ def parse_upload(filename, content):
             invalid("XML 禁止 DTD 和实体", "body.file")
         schema = etree.XMLSchema(etree.parse(str(SCHEMA_PATH)))
         if not schema.validate(root):
-            invalid("XML 不符合 task.xsd 格式", "body.file")
+            error = schema.error_log.last_error
+            invalid(
+                "XML 不符合 task.xsd：" + error.message,
+                f"{error.path or '/task'} (line {error.line})",
+            )
         return root
-    except (etree.XMLSyntaxError, ValueError):
-        invalid("XML 格式无效", "body.file")
+    except (etree.XMLSyntaxError, ValueError) as exc:
+        invalid("XML 格式无效", f"body.file (line {getattr(exc, 'lineno', 1)})")
 
 
 def typed_value(node):
@@ -58,67 +79,169 @@ def convert(root, base_url, lookup):
                 "source_type": "fixed",
                 "value_type": node.get("valueType", "string"),
                 "value": typed_value(node),
+                "sensitive": node.get("sensitive", "false") in {"true", "1"},
             }
         )
-    for index, node in enumerate(
-        sorted(root.findall("taskStep"), key=lambda n: int(n.get("order")))
-    ):
-        rest = node.find("rest")
-        interface, document = lookup(rest.get("method"), rest.get("path"))
-        step = {
-            "file_id": interface["file_id"],
-            "interface_id": interface["id"],
-            "version": interface["version"],
-            "bindings": [],
-            "assertion_code": rest.findtext("assertionCode"),
-        }
-        for header in rest.findall("header"):
-            step["bindings"].append(
-                {
-                    "location": "header",
-                    "name": header.findtext("name").strip(),
-                    "binding": {"kind": "literal", "value": typed_value(header)},
+
+    def append(container, scope="main", parent=None):
+        for node in sorted(container.findall("taskStep"), key=lambda n: int(n.get("order"))):
+            index = len(config["steps"])
+            child = next(c for c in node if isinstance(c.tag, str))
+            kind = child.tag
+            options = {}
+            if any(
+                node.get(key) is not None
+                for key in ("ifParameter", "ifOperator", "ifValue", "onFalse")
+            ):
+                condition = {
+                    "parameter": node.get("ifParameter"),
+                    "operator": node.get("ifOperator", "notEmpty"),
+                    "on_false": node.get("onFalse", "skip"),
                 }
-            )
-        for kv in rest.findall("body/kv"):
-            reference = kv.findtext("parameter")
-            name = (kv.findtext("key") or reference or "").strip()
-            if not name:
-                invalid("字面值 kv 必须提供 key", "body.file")
-            candidates = [
-                (p["location"], p["name"])
-                for p in interface["parameters"]
-                if p["name"] == name and p["location"] in {"path", "query"}
-            ]
-            bodydef = interface.get("request_body")
-            if bodydef:
-                properties = resolve_schema(bodydef["schema"], document).get("properties", {})
-                if name.startswith("/"):
-                    candidates.append(("body", name))
-                elif name in properties:
-                    candidates.append(("body", "/" + pointer(name)))
-            if kv.get("location"):
-                candidates = [c for c in candidates if c[0] == kv.get("location")]
-            if len(candidates) != 1:
-                invalid("kv 字段不存在或存在歧义，请使用 location 和 JSON Pointer", "body.file")
-            location, field = candidates[0]
-            binding = (
-                {"kind": "global", "parameter_name": reference.strip()}
-                if reference is not None
-                else {"kind": "literal", "value": typed_value(kv)}
-            )
-            step["bindings"].append({"location": location, "name": field, "binding": binding})
-        config["steps"].append(step)
-        for extracted in rest.findall("extractParam"):
-            config["global_parameters"].append(
-                {
-                    "name": extracted.findtext("name").strip(),
-                    "source_type": "rest",
-                    "value_type": extracted.get("valueType", "string"),
-                    "rest_source": {
-                        "step_index": index,
-                        "extract_expression": extracted.findtext("value").strip(),
-                    },
-                }
-            )
+                if node.get("ifValue") is not None:
+                    try:
+                        condition["value"] = json.loads(node.get("ifValue"))
+                    except ValueError:
+                        invalid("ifValue 必须为 JSON 字面量", root.getroottree().getpath(node))
+                options["condition"] = condition
+            step = {"step_type": kind, "execution_scope": scope, "position": int(node.get("order"))}
+            if parent is not None:
+                step["parent_step_index"] = parent
+            step["options"] = options
+            config["steps"].append(step)
+            if kind == "compute":
+                options["timezone"] = child.get("timezone", "Asia/Shanghai")
+                options["expressions"] = []
+                for computed in child.findall("parameter"):
+                    name = computed.findtext("name").strip()
+                    options["expressions"].append(
+                        {"name": name, "expression": computed.findtext("value").strip()}
+                    )
+                    config["global_parameters"].append(
+                        {
+                            "name": name,
+                            "source_type": "expression",
+                            "value_type": computed.get("valueType", "string"),
+                            "sensitive": computed.get("sensitive", "false") in {"true", "1"},
+                            "expression_source": {"step_index": index},
+                        }
+                    )
+            elif kind == "wait":
+                if child.get("milliseconds") is not None:
+                    step["wait_milliseconds"] = int(child.get("milliseconds"))
+                if child.get("parameter") is not None:
+                    policy = {
+                        "parameter": child.get("parameter"),
+                        "mode": child.get("mode", "duration"),
+                        "unit": child.get("unit", "seconds"),
+                        "offset_milliseconds": int(child.get("offsetMilliseconds", "0")),
+                    }
+                    if child.get("offsetParameter") is not None:
+                        policy.update(
+                            offset_parameter=child.get("offsetParameter"),
+                            offset_unit=child.get("offsetUnit", "seconds"),
+                        )
+                    options["wait"] = policy
+                elif any(
+                    child.get(key) is not None
+                    for key in (
+                        "mode",
+                        "unit",
+                        "offsetMilliseconds",
+                        "offsetParameter",
+                        "offsetUnit",
+                    )
+                ):
+                    invalid("动态等待属性必须提供 parameter", root.getroottree().getpath(child))
+            elif kind == "parallel":
+                step["max_concurrency"] = int(child.get("maxConcurrency", "8"))
+                append(child, scope, index)
+            else:
+                try:
+                    interface, _document = lookup(child.get("method"), child.get("path"))
+                    step.update(
+                        file_id=interface["file_id"],
+                        interface_id=interface["id"],
+                        version=interface["version"],
+                        bindings=[],
+                        headers=[],
+                        assertion_code=child.findtext("assertionCode"),
+                    )
+                    auth = child.find("auth")
+                    if auth is not None:
+                        options["auth"] = dict(auth.attrib)
+                    for xml_name, field in (("rawPath", "raw_path"), ("rawQuery", "raw_query")):
+                        element = child.find(xml_name)
+                        if element is not None:
+                            options[field] = element.text or ""
+                    assignments = child.findall("updateParam")
+                    if assignments:
+                        options["assignments"] = [
+                            {
+                                "name": e.findtext("name").strip(),
+                                "extract_expression": e.findtext("value").strip(),
+                            }
+                            for e in assignments
+                        ]
+                    for header in child.findall("header"):
+                        step["headers"].append(
+                            {
+                                "name": header.findtext("name").strip(),
+                                "binding": {"kind": "literal", "value": typed_value(header)},
+                            }
+                        )
+                    for header in step["headers"]:
+                        reference = global_binding_name(header["binding"])
+                        if reference is not None:
+                            header["binding"] = {"kind": "global", "parameter_name": reference}
+                    raw = child.find("rawBody")
+                    if raw is not None:
+                        step["raw_body"] = {"text": raw.text or ""}
+                    for container_name, location in (
+                        ("pathParams", "path"),
+                        ("queryParams", "query"),
+                        ("body", "body"),
+                    ):
+                        for kv in child.findall(container_name + "/kv"):
+                            reference = kv.findtext("parameter")
+                            name = (kv.findtext("key") or reference or "").strip()
+                            if not name:
+                                invalid("字面值 kv 必须提供 key", root.getroottree().getpath(kv))
+                            if location == "body" and not name.startswith("/"):
+                                name = "/" + pointer(name)
+                            binding = (
+                                {"kind": "global", "parameter_name": reference.strip()}
+                                if reference is not None
+                                else {"kind": "literal", "value": typed_value(kv)}
+                            )
+                            step["bindings"].append(
+                                {"location": location, "name": name, "binding": binding}
+                            )
+                    for extracted in child.findall("extractParam"):
+                        config["global_parameters"].append(
+                            {
+                                "name": extracted.findtext("name").strip(),
+                                "source_type": "rest",
+                                "value_type": extracted.get("valueType", "string"),
+                                "sensitive": extracted.get("sensitive", "false") in {"true", "1"},
+                                "rest_source": {
+                                    "step_index": index,
+                                    "extract_expression": extracted.findtext("value").strip(),
+                                },
+                            }
+                        )
+                except BusinessError as exc:
+                    raise BusinessError(
+                        exc.status,
+                        exc.payload["code"],
+                        exc.payload["detail"],
+                        root.getroottree().getpath(child) + f" (line {child.sourceline})",
+                    ) from None
+
+    append(root)
+    cleanup = root.find("finally")
+    if cleanup is not None:
+        append(cleanup, "finally")
+    if len(config["steps"]) > 1000:
+        raise BusinessError(400, "INVALID_STEP_STRUCTURE", "任务节点不得超过 1000", "/task")
     return config

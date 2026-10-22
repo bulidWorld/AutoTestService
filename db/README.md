@@ -81,3 +81,35 @@ AUTOTEST_DB_TESTS=1 .venv/bin/python -m pytest tests/test_phase1_database.py -q
 - 原任务内步骤组功能已移除；已有数据库中的旧表和可空列不再使用，不自动删除历史结构。
 
 部署前执行 `bash scripts/db_sync.sh`；XML 内包含运行期新增字段的幂等升级语句。
+
+## 统一任务执行节点
+
+[020_task_compose.xml](020_task_compose.xml) 保存最终任务表结构，
+[050_task_execution_nodes.xml](050_task_execution_nodes.xml) 保存幂等结构升级。
+当前同步入口读取 `database.schema_directory`（默认 `db`）下全部 `*.xml`，无需增加文件白名单。
+
+- `task_steps` 使用 `step_type`、`execution_scope`、`parent_step_id` 表示执行树；`position` 为兄弟排序值。
+  REST 保存独立 `headers`、可选 `raw_body`；wait/parallel 不绑定接口，对应接口字段允许 NULL。
+- `task_run_steps` 保存节点类型、范围及运行父引用；parallel 父节点的 `parallel_stats` 仅保存累计统计。
+  并发 REST 不写 `task_requests`，不保存逐请求响应或响应耗时；普通和清理 REST 继续关联叶子运行步骤。
+- `task_runs` 增加 `execution_stage`、主流程错误字段及 `cleanup_status`，清理结束前保持 running。
+  `task_run_parameters.published` 默认 false，明确区分成功提取与上下文发布。
+- 配置和运行节点均有 `(task/run_id, execution_scope, parent_id, position, id)` 索引。
+  新增字段关系和取值由业务事务校验，不增加外键或 CHECK。
+
+结构升级不转换旧 headers 绑定、任务配置或历史快照。REST/wait/parallel 专用字段组合、
+父子映射、依赖和执行调度由业务事务与执行器处理；部署时同步数据库并重启应用加载新执行逻辑。
+
+可在独立测试数据库验证新建结构与重复升级：
+
+```bash
+AUTOTEST_DB_TESTS=1 .venv/bin/python -m pytest tests/test_execution_node_database.py -q
+```
+
+测试创建临时 schema 并在结束时回滚，不修改已有业务表。
+
+## G1～G6 执行策略扩展
+
+`050_task_execution_nodes.xml` 增加 `task_steps.options jsonb`，保存鉴权、条件、参数更新、动态等待及原始路径/查询策略；`wait_milliseconds` 扩展为 bigint，单次等待最多 30 天。状态字段增加业务终态 blocked，并发统计增加 blocked_count；不使用 PostgreSQL enum。运行参数赋值允许 JSON null，不受断言结果影响。部署时使用现有同步流程；本轮未执行迁移或测试。
+
+compute 参数使用 source_type=expression 及 task_parameters.expression_source JSONB，表达式位于 task_steps.options.expressions，默认时区为 Asia/Shanghai。首次创建与已有数据库迁移均已补定义；本轮未执行迁移或测试。

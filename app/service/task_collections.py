@@ -1,6 +1,5 @@
 """Collection dependency checks, parameter provenance, batch scheduling and durable audit."""
 
-import ast
 import copy
 import logging
 from itertools import groupby
@@ -8,46 +7,44 @@ from itertools import groupby
 from psycopg.types.json import Jsonb
 
 from app.service.errors import invalid
-from app.service.task_config import build_request, execution_plan, validate_config
+from app.service.task_config import validate_config
+from app.service.task_expressions import expression_parameters
 
 LOGGER = logging.getLogger(__name__)
 
 
-def assertion_parameters(code, declarations):
-    """Resolve literal dictionary reads; dynamic access needs all declarations."""
-    if not code or not code.strip():
-        return set()
-    # Syntax and supported Python constructs are checked by validate_config.
-    from app.service.assertions import validate_assertion
-
-    validate_assertion(code, "assertion_code")
-    tree = ast.parse(code)
-    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
-    result = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Name) or node.id != "globalParam":
-            continue
-        parent = parents.get(node)
-        if isinstance(parent, ast.Subscript) and parent.value is node:
-            key = parent.slice
-        elif isinstance(parent, ast.Attribute) and parent.attr == "get":
-            call = parents.get(parent)
-            if not isinstance(call, ast.Call) or not call.args:
-                return set(declarations)
-            key = call.args[0]
-        else:
-            return set(declarations)
-        if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
-            return set(declarations)
-        result.add(key.value)
-    return result
-
-
 def validate_members(members):
     members.sort(key=lambda m: (m["position"], m["config"].get("id", 0)))
+    auth_names = {
+        auth["parameter"]
+        for member in members
+        for step in member["config"]["steps"]
+        for auth in [(step.get("options") or {}).get("auth") or {}]
+        if auth.get("mode") == "bearer"
+    }
+    sensitive_names = auth_names | {
+        p["name"]
+        for member in members
+        for p in member["config"]["global_parameters"]
+        if p.get("sensitive")
+    }
+    dependents = {}
+    for member in members:
+        for step in member["config"]["steps"]:
+            for item in (step.get("options") or {}).get("expressions", []):
+                for name in expression_parameters(
+                    item["expression"], "members.options.expressions"
+                ):
+                    dependents.setdefault(name, set()).add(item["name"])
+    pending = list(sensitive_names)
+    while pending:
+        for name in dependents.get(pending.pop(), set()) - sensitive_names:
+            sensitive_names.add(name)
+            pending.append(name)
     types, sensitive = {}, {}
     for member in members:
         for p in member["config"]["global_parameters"]:
+            p["sensitive"] = p["sensitive"] or p["name"] in sensitive_names
             if p["name"] in types and types[p["name"]] != p["value_type"]:
                 invalid("任务组同名参数类型不一致", "members.global_parameters")
             types[p["name"]] = p["value_type"]
@@ -62,17 +59,6 @@ def validate_members(members):
                 p["sensitive"] = sensitive[p["name"]]
             validate_config(config, run=True)
             declarations = {p["name"]: p for p in config["global_parameters"]}
-            ready = {n: declarations[n] for n in available & declarations.keys()}
-            for kind, item in execution_plan(config):
-                if kind == "parameter":
-                    ready[item["name"]] = item
-                else:
-                    if (
-                        assertion_parameters(item.get("assertion_code"), declarations)
-                        - ready.keys()
-                    ):
-                        invalid("断言引用未声明或尚未赋值的参数", "members.assertion_code")
-                    build_request(config, item, declarations=ready)
             outputs.update(declarations)
         available.update(outputs)
 
@@ -126,7 +112,11 @@ def finish_collection(db, cid, code, message):
         (cid,),
     ).fetchall()
     for row in pending:
-        child_code = "COLLECTION_MEMBER_SKIPPED" if code == "COLLECTION_MEMBER_FAILED" else code
+        child_code = (
+            "COLLECTION_MEMBER_SKIPPED"
+            if code in {"COLLECTION_MEMBER_FAILED", "COLLECTION_MEMBER_BLOCKED"}
+            else code
+        )
         finish_failure(db, row["task_run_id"], child_code, message)
     db.execute(
         "UPDATE task_collection_run_members SET status=CASE WHEN status='pending' "
@@ -135,9 +125,9 @@ def finish_collection(db, cid, code, message):
         (cid,),
     )
     db.execute(
-        "UPDATE task_collection_runs SET status='failed',error_code=%s,error_message=%s,"
+        "UPDATE task_collection_runs SET status=%s,error_code=%s,error_message=%s,"
         "finished_at=now() WHERE id=%s AND status IN ('queued','running')",
-        (code, message, cid),
+        ("blocked" if code == "COLLECTION_MEMBER_BLOCKED" else "failed", code, message, cid),
     )
 
 
@@ -152,7 +142,7 @@ def recover(db, before):
         db.execute(
             "UPDATE task_collection_run_members m SET status=r.status FROM task_runs r "
             "WHERE m.collection_run_id=%s AND m.task_run_id=r.id "
-            "AND m.status='running' AND r.status IN ('succeeded','failed')",
+            "AND m.status='running' AND r.status IN ('succeeded','failed','blocked')",
             (row["id"],),
         )
         finish_collection(db, row["id"], "EXECUTION_INTERRUPTED", "服务重启，执行中断")
@@ -171,12 +161,13 @@ def advance(db):
         db.execute(
             "UPDATE task_collection_run_members m SET status=r.status FROM task_runs r "
             "WHERE m.collection_run_id=%s AND m.task_run_id=r.id "
-            "AND m.status='running' AND r.status IN ('succeeded','failed')",
+            "AND m.status='running' AND r.status IN ('succeeded','failed','blocked')",
             (cid,),
         )
         rows = db.execute(
-            "SELECT * FROM task_collection_run_members WHERE collection_run_id=%s "
-            "ORDER BY position,task_id",
+            "SELECT m.*,r.primary_error_code,r.cleanup_status FROM task_collection_run_members m "
+            "JOIN task_runs r ON r.id=m.task_run_id WHERE collection_run_id=%s "
+            "ORDER BY m.position,m.task_id",
             (cid,),
         ).fetchall()
         context = collection["global_parameters"]
@@ -184,7 +175,12 @@ def advance(db):
         # The final batch merge and parent success commit in the same transaction.
         batches = [list(b) for _, b in groupby(rows, key=lambda r: r["position"])]
         for index, batch in enumerate(batches):
-            if any(r["status"] == "failed" for r in batch):
+            if any(
+                r["status"] in {"failed", "blocked"}
+                or r["primary_error_code"]
+                or r["cleanup_status"] == "failed"
+                for r in batch
+            ):
                 from app.service.task_execution import finish_failure
 
                 executing = False
@@ -210,8 +206,14 @@ def advance(db):
                     else:
                         executing = True
                 if not executing:
+                    blocked = any(r["status"] == "blocked" for r in batch) and not any(
+                        r["status"] == "failed" for r in batch
+                    )
                     finish_collection(
-                        db, cid, "COLLECTION_MEMBER_FAILED", "成员任务失败，后续执行跳过"
+                        db,
+                        cid,
+                        "COLLECTION_MEMBER_BLOCKED" if blocked else "COLLECTION_MEMBER_FAILED",
+                        "成员任务未成功，后续执行跳过",
                     )
                 break
             if any(r["status"] == "running" for r in batch):
@@ -233,7 +235,7 @@ def advance(db):
                 context = copy.deepcopy(context)
                 for row in batch:
                     params = db.execute(
-                        "SELECT * FROM task_run_parameters WHERE run_id=%s AND status='succeeded' "
+                        "SELECT * FROM task_run_parameters WHERE run_id=%s AND status='succeeded' AND published "
                         "ORDER BY position,id",
                         (row["task_run_id"],),
                     ).fetchall()

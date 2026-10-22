@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 示意接口：先导入 POST /register、POST /auth/refresh、DELETE /me；注册成功响应含 data.id（integer）及令牌。 -->
+<task name="预期注册失败后的会话捕获与条件清理">
+  <parameters>
+    <parameter type="fixed" valueType="boolean"><name>environmentReady</name><value>true</value></parameter>
+    <parameter type="fixed" sensitive="true"><name>accessToken</name><value/></parameter>
+    <parameter type="fixed" sensitive="true"><name>refreshToken</name><value/></parameter>
+  </parameters>
+  <taskStep order="10" ifParameter="environmentReady" ifOperator="equals" ifValue="true" onFalse="blocked">
+    <rest method="POST" path="/register">
+      <auth mode="none"/>
+      <body>
+        <kv><key>email</key><value>negative-case@example.com</value></kv>
+        <kv><key>password</key><value>ExamplePassword123!</value></kv>
+      </body>
+      <assertionCode><![CDATA[
+def assert_response(responseBody, globalParam, statusCode, headers):
+    return statusCode == 400
+]]></assertionCode>
+      <extractParam valueType="integer"><name>registeredAccountId</name><value>data.id</value></extractParam>
+      <updateParam><name>accessToken</name><value>data.accessToken</value></updateParam>
+      <updateParam><name>refreshToken</name><value>data.refreshToken</value></updateParam>
+    </rest>
+  </taskStep>
+  <finally>
+    <taskStep order="10" ifParameter="refreshToken" onFalse="skip">
+      <rest method="POST" path="/auth/refresh">
+        <auth mode="none"/>
+        <body><kv><parameter>refreshToken</parameter></kv></body>
+        <assertionCode><![CDATA[
+def assert_response(responseBody, globalParam, statusCode, headers):
+    return statusCode == 200 and bool(responseBody["data"]["accessToken"])
+]]></assertionCode>
+        <updateParam><name>accessToken</name><value>data.accessToken</value></updateParam>
+        <updateParam><name>refreshToken</name><value>data.refreshToken</value></updateParam>
+      </rest>
+    </taskStep>
+    <taskStep order="20" ifParameter="registeredAccountId" onFalse="skip">
+      <rest method="DELETE" path="/me">
+        <auth mode="bearer" parameter="accessToken"/>
+        <assertionCode><![CDATA[
+def assert_response(responseBody, globalParam, statusCode, headers):
+    return statusCode == 204
+]]></assertionCode>
+        <extractParam valueType="string"><name>cleanupReceipt</name><value>data.receipt</value></extractParam>
+      </rest>
+    </taskStep>
+  </finally>
+</task>

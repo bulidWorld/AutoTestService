@@ -1,8 +1,61 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
-  <xs:annotation>
-    <xs:documentation xml:lang="zh">任务导入格式，无命名空间。使用 task/parameters/parameter 和 taskStep/rest；标签严格区分大小写，正确拼写为 parameter、extractParam。接口必须已导入同一项目，method/path 唯一匹配各文件当前版本。运行地址由 multipart 表单 base_url 提供。所有名字非空且全局参数不可重名。步骤按唯一正整数 order 升序执行。禁止 DTD、实体、外部引用。文本默认 string；valueType 可指定其他 JSON 类型，此时 value 必须是对应 JSON 字面量。固定参数先初始化，extractParam 在所属步骤完成后提取，后续步骤才可引用；表达式如 data[0].id，仅支持字段和非负数组下标。值中的 XML 特殊字符须转义。</xs:documentation>
-  </xs:annotation>
+  <xs:complexType name="UpdateParameter">
+    <xs:annotation>
+      <xs:documentation>更新已声明参数的运行值，不新增声明；按目标声明类型提取。登录、刷新及清理 REST 可使用；断言失败仍更新，未取到值覆盖为 null。并发兄弟禁止写同名参数。</xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="name" type="nonEmpty"/>
+      <xs:element name="value" type="nonEmpty"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="AuthPolicy">
+    <xs:annotation>
+      <xs:documentation>逐步鉴权：bearer 引用 string 参数并生成 Authorization: Bearer &lt;token&gt;；none 明确不发送鉴权。bearer/none 与显式 Authorization 互斥。header 模式要求恰好一个显式 Authorization，豁免该头的接口 Schema 以覆盖伪造、空值、错误前缀；仍禁止控制换行。不存在项目级隐式鉴权。</xs:documentation>
+    </xs:annotation>
+    <xs:attribute name="mode" type="AuthMode" use="required"/>
+    <xs:attribute name="parameter" type="nonEmpty"/>
+  </xs:complexType>
+  <xs:simpleType name="OffsetUnit">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="seconds"/>
+      <xs:enumeration value="milliseconds"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="WaitUnit">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="seconds"/>
+      <xs:enumeration value="milliseconds"/>
+      <xs:enumeration value="iso8601"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="WaitMode">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="duration"/>
+      <xs:enumeration value="until"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="OnFalse">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="skip"/>
+      <xs:enumeration value="blocked"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="ConditionOperator">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="notEmpty"/>
+      <xs:enumeration value="present"/>
+      <xs:enumeration value="equals"/>
+      <xs:enumeration value="truthy"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="AuthMode">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="bearer"/>
+      <xs:enumeration value="none"/>
+      <xs:enumeration value="header"/>
+    </xs:restriction>
+  </xs:simpleType>
   <xs:simpleType name="nonEmpty">
     <xs:annotation>
       <xs:documentation xml:lang="zh">非空标识文本。XSD 按 xs:token 检查空白；生成时请直接填写无首尾空白的名字，避免依赖空白归一化。参数名和引用名须保持一致。</xs:documentation>
@@ -13,7 +66,7 @@
   </xs:simpleType>
   <xs:simpleType name="valueType">
     <xs:annotation>
-      <xs:documentation xml:lang="zh">业务值类型：string 写原始文本（例如 hello，不要额外加 JSON 引号）；integer 写 42；number 写 3.14；boolean 写 true 或 false；object 写 {"id":42}；array 写 [1,2]。除 string 外均按 JSON 解析，类型必须准确；不支持 null、NaN 或无穷大。此类型也用于响应提取结果的类型检查。</xs:documentation>
+      <xs:documentation xml:lang="zh">业务值类型：string 写原始文本（例如 hello，不要额外加 JSON 引号）；integer 写 42；number 写 3.14；boolean 写 true 或 false；object 写 {"id":42}；array 写 [1,2]。除 string 外均按 JSON 解析，类型必须准确；不支持 null、NaN 或无穷大。此类型也用于响应提取结果及 compute 表达式最终结果的类型检查；compute/parameter/value 始终是表达式代码，不按 JSON 字面量解析；运行提取缺失或不匹配时赋 null，不影响其他参数。</xs:documentation>
     </xs:annotation>
     <xs:restriction base="xs:string">
       <xs:enumeration value="string"/>
@@ -26,7 +79,7 @@
   </xs:simpleType>
   <xs:complexType name="pair">
     <xs:annotation>
-      <xs:documentation xml:lang="zh">通用 name/value 结构，子元素顺序固定为 name、value。用于固定参数、请求头和响应提取声明；其中 value 在 extractParam 内表示提取表达式，其余位置表示字面值。</xs:documentation>
+      <xs:documentation xml:lang="zh">通用 name/value 结构，子元素顺序固定为 name、value。用于固定参数、请求头、响应提取和 compute 表达式参数声明；其中 value 在 extractParam 内表示提取表达式，其余位置表示字面值。</xs:documentation>
     </xs:annotation>
     <xs:sequence>
       <xs:element name="name" type="nonEmpty">
@@ -36,19 +89,365 @@
       </xs:element>
       <xs:element name="value" type="xs:string">
         <xs:annotation>
-          <xs:documentation xml:lang="zh">必填文本元素。固定参数和 header 的内容按父元素 valueType 解释，string 可为空且保留值的首尾空白；extractParam 中必须填写响应 JSON 提取表达式，例如 data[0].id，不能填写 JSON 字面值或 Python 代码。</xs:documentation>
+          <xs:documentation xml:lang="zh">必填文本元素。固定参数和 header 的内容按父元素 valueType 解释，string 可为空且保留值的首尾空白；compute/parameter 中填写受限表达式代码；extractParam 中必须填写响应 JSON 提取表达式，例如 data[0].id，不能填写 JSON 字面值或 Python 代码。</xs:documentation>
         </xs:annotation>
       </xs:element>
     </xs:sequence>
     <xs:attribute name="valueType" type="valueType" default="string">
       <xs:annotation>
-        <xs:documentation xml:lang="zh">可选，默认 string。parameter/header 中决定 value 的解析类型；extractParam 中决定响应结果的预期类型（value 仍然是表达式）。例如提取数字 ID 时在 extractParam 上写 valueType="integer"。</xs:documentation>
+        <xs:documentation xml:lang="zh">可选，默认 string。固定 parameter/header 中决定 value 的解析类型；compute/parameter 中约束表达式的最终结果类型；extractParam 中决定响应结果的预期类型（value 仍然是表达式）。例如提取数字 ID 时在 extractParam 上写 valueType="integer"。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="sensitive" type="xs:boolean" default="false">
+      <xs:annotation>
+        <xs:documentation>参数值脱敏标记；用于 parameter/extractParam，更新参数继承目标声明标记。Bearer 引用参数自动标记敏感。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+  </xs:complexType>
+  <xs:simpleType name="Position">
+    <xs:annotation>
+      <xs:documentation xml:lang="zh">兄弟 order 为正 int32，允许间断；同容器唯一，不同容器可以同为 10。非法例：0 或 2147483648。</xs:documentation>
+    </xs:annotation>
+    <xs:restriction base="xs:integer">
+      <xs:minInclusive value="1"/>
+      <xs:maxInclusive value="2147483647"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Milliseconds">
+    <xs:annotation>
+      <xs:documentation xml:lang="zh">固定等待毫秒，范围 1～2592000000（30 天）；七天为 604800000，一个节点即可。不发送请求；等待可中断，不持有数据库连接或 HTTP 槽位。服务重启按 EXECUTION_INTERRUPTED 处理，不自动重放。</xs:documentation>
+    </xs:annotation>
+    <xs:restriction base="xs:integer">
+      <xs:minInclusive value="1"/>
+      <xs:maxInclusive value="2592000000"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Concurrency">
+    <xs:annotation>
+      <xs:documentation xml:lang="zh">同时活动子节点数 1～8；例如 2，非法 9，wait 也占子节点并发许可。</xs:documentation>
+    </xs:annotation>
+    <xs:restriction base="xs:integer">
+      <xs:minInclusive value="1"/>
+      <xs:maxInclusive value="8"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:complexType name="KeyValue">
+    <xs:annotation>
+      <xs:documentation>独立容器字段绑定；可选 key 后写 value 或 parameter，字面值必须带 key。禁止 location 属性，不跨位置推断。</xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="key" type="nonEmpty" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">目标字段名；目标位置由所在 pathParams/queryParams/body 容器确定，普通名称仅匹配对应位置。JSON Pointer 以 / 开头，~ 和 / 在属性名内分别转义成 ~0 和 ~1，例如 /data/items/0/id。绑定嵌套字段时必须存在于接口 Schema 中。只有使用 parameter 引用且目标同名时才可省略 key。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:choice>
+        <xs:element name="value" type="xs:string">
+          <xs:annotation>
+            <xs:documentation xml:lang="zh">字段字面值，与同级 parameter 二选一。按 kv 的 valueType 解析，并校验是否符合目标接口字段 Schema。string 可为空；整个字符串若恰为 {id}，会按现有规则引用全局参数 id，不支持字符串插值拼接。</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="parameter" type="nonEmpty">
+          <xs:annotation>
+            <xs:documentation xml:lang="zh">引用全局参数名，而不是嵌套 parameter 定义；不能带 type、name、value 子元素。必须引用固定参数或前序步骤已提取的参数，不能引用当前步骤或后续步骤的提取结果。保留参数实际类型，kv 的 valueType 不转换引用值。示例：&lt;kv &gt;&lt;key&gt;order_id&lt;/key&gt;&lt;parameter&gt;id&lt;/parameter&gt;&lt;/kv&gt;。</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+      </xs:choice>
+    </xs:sequence>
+    <xs:attribute name="valueType" type="valueType" default="string">
+      <xs:annotation>
+        <xs:documentation xml:lang="zh">可选，默认 string，仅解析本 kv 的 value 字面值；使用 parameter 时忽略该属性，直接保留被引用参数的类型。目标字段要求 integer 时请写 valueType="integer"，不能用字符串 "42" 代替数字 42。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+  </xs:complexType>
+  <xs:complexType name="Bindings">
+    <xs:annotation>
+      <xs:documentation xml:lang="zh">绑定容器可为空或省略，最多出现一次；例如 pathParams 中 id 仅匹配路径参数，非法：放入 body 后期望推断为 path。</xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="kv" type="KeyValue" minOccurs="0" maxOccurs="unbounded">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">容器内不得重复字段；body 中也不允许父子字段重叠，业务校验。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="RestStep">
+    <xs:annotation>
+      <xs:documentation xml:lang="zh">一个 REST 请求；参数独立提取，断言失败仍保存并发布，未取到值赋 null；并发子节点在已启动节点收尾后发布，不要求屏障成功。</xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="header" type="pair" minOccurs="0" maxOccurs="unbounded">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">独立请求头；valueType 默认 string，例如 value={client} 引用参数；大小写不敏感且不可重复，禁止保留头、对象/数组与换行。保留头名单（大小写不敏感）：Host、Content-Length、Transfer-Encoding、Connection、Keep-Alive、Proxy-Connection、TE、Trailer、Upgrade、method、url、base_url、timeout_seconds。Authorization 允许显式设置；动态 Bearer 使用 auth bearer；伪造或空值鉴权使用 auth header，仅此模式允许与显式 Authorization 共存。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="auth" type="AuthPolicy" minOccurs="0"/>
+      <xs:element name="pathParams" type="Bindings" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">仅匹配接口路径占位符。可省略或为空；key 精确匹配，不跨容器推断。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="queryParams" type="Bindings" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">仅匹配接口 query 定义。可省略或为空；key 精确匹配，不跨容器推断。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:choice minOccurs="0">
+        <xs:element name="body" type="Bindings">
+          <xs:annotation>
+            <xs:documentation xml:lang="zh">结构化 JSON 请求体字段绑定；普通 key 为顶层字段，Pointer 支持嵌套。与 rawBody 互斥，空 body 也不可同时出现。</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="rawBody" type="xs:string">
+          <xs:annotation>
+            <xs:documentation xml:lang="zh">原始 UTF-8 文本，元素存在即启用；空元素发送零字节。可用 CDATA 保存非法 JSON，例如 {"name":。不解析、不插值、不去空白、不脱敏；仅支持声明 application/json 的接口，path/query/header 仍严格校验。</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+      </xs:choice>
+      <xs:element name="rawPath" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>显式负向测试原始 ASCII 输入；绕过对应位置的参数 Schema 与必填校验，不与同位置绑定混用。rawPath 须以 / 开头且无 ? 或 #；rawQuery 不带开头 ? 且可为空；禁止空白、控制字符和 #。固定主机及 base_url 前缀，其他位置照常严格校验。不解析、不插值、不二次 URL 编码，生成者负责百分号编码。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="rawQuery" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>显式负向测试原始 ASCII 输入；绕过对应位置的参数 Schema 与必填校验，不与同位置绑定混用。rawPath 须以 / 开头且无 ? 或 #；rawQuery 不带开头 ? 且可为空；禁止空白、控制字符和 #。固定主机及 base_url 前缀，其他位置照常严格校验。不解析、不插值、不二次 URL 编码，生成者负责百分号编码。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="assertionCode" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">可选 Python 断言，定义 assert_response(responseBody, globalParam, statusCode, headers) 并返回 bool；建议 CDATA。statusCode 是真实 HTTP 状态码整数，不能用响应体的业务 code 代替；headers 是小写响应头名到字符串列表的映射，保留重复头顺序，例如 headers.get("content-type", [])。responseBody 是 JSON 解析结果；遇到空响应或非 JSON 时为 None，仍可断言状态和头。例：return statusCode == 400 and responseBody["code"] == "INVALID_JSON"。入口必须使用上述四个参数。断言结果不影响参数提取与发布；字段缺失、类型不匹配或无可用 JSON 时，对应参数赋 null。无断言时按 HTTP 2xx；有断言时以返回值替代 HTTP 成功判定；可 raise Blocked(...) 表示前提不足，终态 blocked，仍执行条件清理；连接失败或超时不调用断言。main、parallel 子 REST 和 finally 清理 REST 规则相同。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="extractParam" type="pair" minOccurs="0" maxOccurs="unbounded">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">响应字段提取，例如 data.id；valueType 默认 string。main 和 finally REST 均可声明新参数；更新已有会话参数使用 updateParam；每个参数独立提取，未取到值赋 null，其余值保留；断言失败不阻止发布，finally 可引用。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="updateParam" type="UpdateParameter" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="method" use="required">
+      <xs:annotation>
+        <xs:documentation xml:lang="zh">大写 HTTP 方法，与 path 唯一匹配同项目接口；例如 GET，非法 get。</xs:documentation>
+      </xs:annotation>
+      <xs:simpleType>
+        <xs:restriction base="xs:string">
+          <xs:enumeration value="GET"/>
+          <xs:enumeration value="POST"/>
+          <xs:enumeration value="PUT"/>
+          <xs:enumeration value="PATCH"/>
+          <xs:enumeration value="DELETE"/>
+          <xs:enumeration value="HEAD"/>
+          <xs:enumeration value="OPTIONS"/>
+          <xs:enumeration value="TRACE"/>
+        </xs:restriction>
+      </xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="path" type="nonEmpty" use="required">
+      <xs:annotation>
+        <xs:documentation xml:lang="zh">接口原始路径，例如 /resources/{id}，禁止域名和 query；占位符由 pathParams 绑定。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+  </xs:complexType>
+  <xs:complexType name="CleanupRestStep">
+    <xs:annotation>
+      <xs:documentation xml:lang="zh">清理 REST 与主流程使用相同请求、断言和 extractParam 结构；提取结果立即发布供后续清理引用，断言失败不影响提取，未取到值赋 null。</xs:documentation>
+    </xs:annotation>
+    <xs:complexContent>
+      <xs:extension base="RestStep"/>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:complexType name="ComputeStep">
+    <xs:annotation>
+      <xs:documentation>运行时受限表达式参数节点，不发 HTTP。每次执行时捕获一个 now；所有参数表达式读取同一节点前快照，不互相依赖，全部成功后原子发布。默认 timezone=Asia/Shanghai，可指定 IANA 时区。参数 value 是受限表达式，日期/时刻须显式格式化为 string；例如 http_date(add_seconds(now(), 3600))。无效日期、空依赖、类型不匹配或计算失败使节点失败，不以 null 冒充计算结果；仍尝试 finally。</xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="parameter" type="pair" minOccurs="1" maxOccurs="100">
+        <xs:annotation>
+          <xs:documentation>新增一个唯一参数声明，name 为结果参数名，value 为表达式，valueType 为最终 JSON 类型，sensitive 标记敏感结果。param("name") 只能引用该节点执行前已可用的参数，同节点输出不可互引。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:sequence>
+    <xs:attribute name="timezone" type="nonEmpty" default="Asia/Shanghai"/>
+  </xs:complexType>
+  <xs:complexType name="WaitStep">
+    <xs:annotation>
+      <xs:documentation xml:lang="zh">固定 milliseconds 与动态 parameter 二选一。动态 mode=duration（默认）表示相对时长，until 表示绝对到期时刻；unit 默认 seconds，可为 milliseconds 或（until 专用）带时区 iso8601。可加 offsetParameter（默认 seconds，可指定 offsetUnit=milliseconds）及 offsetMilliseconds，计算 base+offset-now；过去时刻立即完成，单次最多 30 天。动态值无效时 WAIT_VALUE_INVALID，不猜测时长；不支持请求轮询循环。</xs:documentation>
+    </xs:annotation>
+    <xs:attribute name="milliseconds" type="Milliseconds" use="optional">
+      <xs:annotation>
+        <xs:documentation xml:lang="zh">可选固定 1～2592000000 毫秒；必须与动态 parameter 二选一，七天只需填写 604800000。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="parameter" type="nonEmpty"/>
+    <xs:attribute name="mode" type="WaitMode"/>
+    <xs:attribute name="unit" type="WaitUnit"/>
+    <xs:attribute name="offsetMilliseconds" type="xs:long"/>
+    <xs:attribute name="offsetParameter" type="nonEmpty"/>
+    <xs:attribute name="offsetUnit" type="OffsetUnit"/>
+  </xs:complexType>
+  <xs:complexType name="ParallelStep">
+    <xs:annotation>
+      <xs:documentation xml:lang="zh">单层并发屏障，至少两个 rest/wait/compute 子节点；非法：嵌套 parallel。失败时停止领取新节点，已启动节点收尾后发布已赋参数（含 null），失败不阻止发布；仅父节点展示汇总。</xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="taskStep" type="LeafTaskStep" minOccurs="2" maxOccurs="unbounded">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">并发叶子；order 决定稳定排队与错误选择，不表示完成顺序。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:sequence>
+    <xs:attribute name="maxConcurrency" type="Concurrency" default="8">
+      <xs:annotation>
+        <xs:documentation xml:lang="zh">可选，统一配置默认 8（见设计 4.1），范围 1～8；例如 2，非法 0；全部子节点受服务全局八个 HTTP 槽位限制。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+  </xs:complexType>
+  <xs:complexType name="MainTaskStep">
+    <xs:annotation>
+      <xs:documentation xml:lang="zh">恰好一个 rest/wait/compute/parallel；order 同父容器唯一，正 int32。清理不能并发，清理 REST 可以提取参数供后续清理引用。</xs:documentation>
+    </xs:annotation>
+    <xs:choice>
+      <xs:element name="rest" type="RestStep">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">REST 请求；主流程失败后依然尝试清理。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="wait" type="WaitStep">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">固定等待，不发 HTTP、不生成参数。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="parallel" type="ParallelStep">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">并发屏障，仅 main 根节点可用。</xs:documentation>
+        </xs:annotation>
+        <xs:unique name="parallelOrder">
+          <xs:annotation>
+            <xs:documentation xml:lang="zh">仅检查本容器直属 taskStep 的 order 唯一；不同容器可重复。</xs:documentation>
+          </xs:annotation>
+          <xs:selector xpath="taskStep"/>
+          <xs:field xpath="@order"/>
+        </xs:unique>
+      </xs:element>
+      <xs:element name="compute" type="ComputeStep"/>
+    </xs:choice>
+    <xs:attribute name="order" type="Position" use="required">
+      <xs:annotation>
+        <xs:documentation xml:lang="zh">必填兄弟排序值，例如 10/20，非法重复 10；与 API 数组下标无关。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="ifParameter" type="nonEmpty">
+      <xs:annotation>
+        <xs:documentation>条件引用已声明参数；默认 notEmpty 和 skip。equals 的 ifValue 写 JSON 字面量；present 只检查是否已赋值，truthy 按布尔判断。条件不满足时 skip 不发请求不提取，blocked 标记前提不足并停止 main、仍尝试 finally。清理可据令牌是否为空跳过。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="ifOperator" type="ConditionOperator">
+      <xs:annotation>
+        <xs:documentation>条件引用已声明参数；默认 notEmpty 和 skip。equals 的 ifValue 写 JSON 字面量；present 只检查是否已赋值，truthy 按布尔判断。条件不满足时 skip 不发请求不提取，blocked 标记前提不足并停止 main、仍尝试 finally。清理可据令牌是否为空跳过。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="ifValue" type="xs:string">
+      <xs:annotation>
+        <xs:documentation>条件引用已声明参数；默认 notEmpty 和 skip。equals 的 ifValue 写 JSON 字面量；present 只检查是否已赋值，truthy 按布尔判断。条件不满足时 skip 不发请求不提取，blocked 标记前提不足并停止 main、仍尝试 finally。清理可据令牌是否为空跳过。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="onFalse" type="OnFalse">
+      <xs:annotation>
+        <xs:documentation>条件引用已声明参数；默认 notEmpty 和 skip。equals 的 ifValue 写 JSON 字面量；present 只检查是否已赋值，truthy 按布尔判断。条件不满足时 skip 不发请求不提取，blocked 标记前提不足并停止 main、仍尝试 finally。清理可据令牌是否为空跳过。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+  </xs:complexType>
+  <xs:complexType name="LeafTaskStep">
+    <xs:annotation>
+      <xs:documentation xml:lang="zh">恰好一个 rest/wait/compute；order 同父容器唯一，正 int32。清理不能并发，清理 REST 可以提取参数供后续清理引用。</xs:documentation>
+    </xs:annotation>
+    <xs:choice>
+      <xs:element name="rest" type="RestStep">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">REST 请求；主流程失败后依然尝试清理。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="wait" type="WaitStep">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">固定等待，不发 HTTP、不生成参数。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="compute" type="ComputeStep"/>
+    </xs:choice>
+    <xs:attribute name="order" type="Position" use="required">
+      <xs:annotation>
+        <xs:documentation xml:lang="zh">必填兄弟排序值，例如 10/20，非法重复 10；与 API 数组下标无关。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="ifParameter" type="nonEmpty">
+      <xs:annotation>
+        <xs:documentation>条件引用已声明参数；默认 notEmpty 和 skip。equals 的 ifValue 写 JSON 字面量；present 只检查是否已赋值，truthy 按布尔判断。条件不满足时 skip 不发请求不提取，blocked 标记前提不足并停止 main、仍尝试 finally。清理可据令牌是否为空跳过。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="ifOperator" type="ConditionOperator">
+      <xs:annotation>
+        <xs:documentation>条件引用已声明参数；默认 notEmpty 和 skip。equals 的 ifValue 写 JSON 字面量；present 只检查是否已赋值，truthy 按布尔判断。条件不满足时 skip 不发请求不提取，blocked 标记前提不足并停止 main、仍尝试 finally。清理可据令牌是否为空跳过。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="ifValue" type="xs:string">
+      <xs:annotation>
+        <xs:documentation>条件引用已声明参数；默认 notEmpty 和 skip。equals 的 ifValue 写 JSON 字面量；present 只检查是否已赋值，truthy 按布尔判断。条件不满足时 skip 不发请求不提取，blocked 标记前提不足并停止 main、仍尝试 finally。清理可据令牌是否为空跳过。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="onFalse" type="OnFalse">
+      <xs:annotation>
+        <xs:documentation>条件引用已声明参数；默认 notEmpty 和 skip。equals 的 ifValue 写 JSON 字面量；present 只检查是否已赋值，truthy 按布尔判断。条件不满足时 skip 不发请求不提取，blocked 标记前提不足并停止 main、仍尝试 finally。清理可据令牌是否为空跳过。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+  </xs:complexType>
+  <xs:complexType name="CleanupTaskStep">
+    <xs:annotation>
+      <xs:documentation xml:lang="zh">恰好一个 rest/wait/compute；order 同父容器唯一，正 int32。清理不能并发，清理 REST 可以提取参数供后续清理引用。</xs:documentation>
+    </xs:annotation>
+    <xs:choice>
+      <xs:element name="rest" type="CleanupRestStep">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">REST 请求；主流程失败后依然尝试清理。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="wait" type="WaitStep">
+        <xs:annotation>
+          <xs:documentation xml:lang="zh">固定等待，不发 HTTP、不生成参数。</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="compute" type="ComputeStep"/>
+    </xs:choice>
+    <xs:attribute name="order" type="Position" use="required">
+      <xs:annotation>
+        <xs:documentation xml:lang="zh">必填兄弟排序值，例如 10/20，非法重复 10；与 API 数组下标无关。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="ifParameter" type="nonEmpty">
+      <xs:annotation>
+        <xs:documentation>条件引用已声明参数；默认 notEmpty 和 skip。equals 的 ifValue 写 JSON 字面量；present 只检查是否已赋值，truthy 按布尔判断。条件不满足时 skip 不发请求不提取，blocked 标记前提不足并停止 main、仍尝试 finally。清理可据令牌是否为空跳过。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="ifOperator" type="ConditionOperator">
+      <xs:annotation>
+        <xs:documentation>条件引用已声明参数；默认 notEmpty 和 skip。equals 的 ifValue 写 JSON 字面量；present 只检查是否已赋值，truthy 按布尔判断。条件不满足时 skip 不发请求不提取，blocked 标记前提不足并停止 main、仍尝试 finally。清理可据令牌是否为空跳过。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="ifValue" type="xs:string">
+      <xs:annotation>
+        <xs:documentation>条件引用已声明参数；默认 notEmpty 和 skip。equals 的 ifValue 写 JSON 字面量；present 只检查是否已赋值，truthy 按布尔判断。条件不满足时 skip 不发请求不提取，blocked 标记前提不足并停止 main、仍尝试 finally。清理可据令牌是否为空跳过。</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="onFalse" type="OnFalse">
+      <xs:annotation>
+        <xs:documentation>条件引用已声明参数；默认 notEmpty 和 skip。equals 的 ifValue 写 JSON 字面量；present 只检查是否已赋值，truthy 按布尔判断。条件不满足时 skip 不发请求不提取，blocked 标记前提不足并停止 main、仍尝试 finally。清理可据令牌是否为空跳过。</xs:documentation>
       </xs:annotation>
     </xs:attribute>
   </xs:complexType>
   <xs:element name="task">
     <xs:annotation>
-      <xs:documentation xml:lang="zh">唯一根元素，无 XML 命名空间。先写可选 parameters，再写至少一个 taskStep；不支持未声明的元素或属性。文件只定义任务，不定义接口资产，也不在 XML 内指定 base_url。导入执行格式、接口、绑定和依赖校验，全部通过后创建新任务，不发出 HTTP 请求。</xs:documentation>
+      <xs:documentation xml:lang="zh">任务执行顺序：固定参数 → main → finally → 终态。总节点至多 1000，业务补充校验。禁止 DTD、实体和外部引用，文件至多 5 MiB，导入不发请求。</xs:documentation>
     </xs:annotation>
     <xs:complexType>
       <xs:sequence>
@@ -77,122 +476,36 @@
             </xs:sequence>
           </xs:complexType>
         </xs:element>
-        <xs:element name="taskStep" minOccurs="1" maxOccurs="unbounded">
+        <xs:element name="taskStep" type="MainTaskStep" minOccurs="1" maxOccurs="unbounded">
           <xs:annotation>
-            <xs:documentation xml:lang="zh">至少一个，可重复。同一步骤恰好包含一个 rest；同一接口允许用于多个步骤。执行顺序取决于 order 数值而非 XML 出现顺序；步骤失败后停止运行，未执行的步骤及参数跳过。</xs:documentation>
+            <xs:documentation xml:lang="zh">至少一个 main 根节点；按 order 升序执行，失败后跳过后续主流程并尝试清理。</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="finally" minOccurs="0">
+          <xs:annotation>
+            <xs:documentation xml:lang="zh">可选且最多一次，至少一个 rest/wait/compute；不允许 parallel；清理 REST 可声明 extractParam。无论 main 成功或失败，进程正常时按顺序尝试全部清理，单步失败不阻断后续清理。</xs:documentation>
           </xs:annotation>
           <xs:complexType>
             <xs:sequence>
-              <xs:element name="rest">
+              <xs:element name="taskStep" type="CleanupTaskStep" minOccurs="1" maxOccurs="unbounded">
                 <xs:annotation>
-                  <xs:documentation xml:lang="zh">当前步骤的 REST 请求。子元素必须依次为：零到多个 header、可选 body、可选 assertionCode、零到多个 extractParam。同一步骤只请求一次，多个 extractParam 共享该次响应；先判定断言，再提取参数。接口按 method/path 匹配同项目每个文件的当前版本，并在保存后固定版本。</xs:documentation>
+                  <xs:documentation xml:lang="zh">清理步骤，缺失已发布输入则失败且不发请求，继续后续清理。</xs:documentation>
                 </xs:annotation>
-                <xs:complexType>
-                  <xs:sequence>
-                    <xs:element name="header" type="pair" minOccurs="0" maxOccurs="unbounded">
-                      <xs:annotation>
-                        <xs:documentation xml:lang="zh">可选、可重复的 HTTP 请求头，name 不区分大小写且不能重复。value 通常使用默认 string；整个值写成 {client} 可引用已初始化的全局参数。禁止换行、对象和数组，以及 Host、Content-Length、Connection 等执行配置相关请求头。JSON 请求体自动补齐 Content-Type；显式指定时须为 application/json。Authorization/Cookie 等敏感头在返回详情中脱敏。</xs:documentation>
-                      </xs:annotation>
-                    </xs:element>
-                    <xs:element name="body" minOccurs="0">
-                      <xs:annotation>
-                        <xs:documentation xml:lang="zh">可选请求参数绑定容器，并不等同于 HTTP 请求体：其中 kv 可以绑定 path、query 或 JSON body。可省略或为空，但接口必填参数仍须完整提供。仅支持 application/json 请求体，不支持 multipart 执行。普通 key 在 path/query/JSON 顶层字段中唯一匹配；歧义用 location 指定。嵌套 JSON 用 Pointer，例如 /data/id。</xs:documentation>
-                      </xs:annotation>
-                      <xs:complexType>
-                        <xs:sequence>
-                          <xs:element name="kv" minOccurs="0" maxOccurs="unbounded">
-                            <xs:annotation>
-                              <xs:documentation xml:lang="zh">一项字段绑定，可重复但不可重复绑定同一字段；JSON 父子字段也不能同时绑定。先写可选 key，再且只能写 value 或 parameter。字面值必须带 key；引用参数时省略 key 则用参数名作为字段名。例如 &lt;kv location="query"&gt;&lt;key&gt;page&lt;/key&gt;&lt;value&gt;1&lt;/value&gt;&lt;/kv&gt;（数字接口字段需另写 valueType="integer"）。</xs:documentation>
-                            </xs:annotation>
-                            <xs:complexType>
-                              <xs:sequence>
-                                <xs:element name="key" type="nonEmpty" minOccurs="0">
-                                  <xs:annotation>
-                                    <xs:documentation xml:lang="zh">目标字段名；普通名称精确匹配接口 path/query 参数或 JSON 顶层属性。JSON Pointer 以 / 开头，~ 和 / 在属性名内分别转义成 ~0 和 ~1，例如 /data/items/0/id。绑定嵌套字段时必须存在于接口 Schema 中。只有使用 parameter 引用且目标同名时才可省略 key。</xs:documentation>
-                                  </xs:annotation>
-                                </xs:element>
-                                <xs:choice>
-                                  <xs:element name="value" type="xs:string">
-                                    <xs:annotation>
-                                      <xs:documentation xml:lang="zh">字段字面值，与同级 parameter 二选一。按 kv 的 valueType 解析，并校验是否符合目标接口字段 Schema。string 可为空；整个字符串若恰为 {id}，会按现有规则引用全局参数 id，不支持字符串插值拼接。</xs:documentation>
-                                    </xs:annotation>
-                                  </xs:element>
-                                  <xs:element name="parameter" type="nonEmpty">
-                                    <xs:annotation>
-                                      <xs:documentation xml:lang="zh">引用全局参数名，而不是嵌套 parameter 定义；不能带 type、name、value 子元素。必须引用固定参数或前序步骤已提取的参数，不能引用当前步骤或后续步骤的提取结果。保留参数实际类型，kv 的 valueType 不转换引用值。示例：&lt;kv location="path"&gt;&lt;key&gt;order_id&lt;/key&gt;&lt;parameter&gt;id&lt;/parameter&gt;&lt;/kv&gt;。</xs:documentation>
-                                    </xs:annotation>
-                                  </xs:element>
-                                </xs:choice>
-                              </xs:sequence>
-                              <xs:attribute name="valueType" type="valueType" default="string">
-                                <xs:annotation>
-                                  <xs:documentation xml:lang="zh">可选，默认 string，仅解析本 kv 的 value 字面值；使用 parameter 时忽略该属性，直接保留被引用参数的类型。目标字段要求 integer 时请写 valueType="integer"，不能用字符串 "42" 代替数字 42。</xs:documentation>
-                                </xs:annotation>
-                              </xs:attribute>
-                              <xs:attribute name="location">
-                                <xs:annotation>
-                                  <xs:documentation xml:lang="zh">可选目标位置，取 path/query/body。未指定时必须能够唯一推断；同名 path 和 query 参数须显式指定。body 表示 JSON 字段，普通 key 匹配顶层属性，Pointer 匹配嵌套属性。HTTP 请求头使用 header 元素填写。</xs:documentation>
-                                </xs:annotation>
-                                <xs:simpleType>
-                                  <xs:restriction base="xs:string">
-                                    <xs:enumeration value="path"/>
-                                    <xs:enumeration value="query"/>
-                                    <xs:enumeration value="body"/>
-                                  </xs:restriction>
-                                </xs:simpleType>
-                              </xs:attribute>
-                            </xs:complexType>
-                          </xs:element>
-                        </xs:sequence>
-                      </xs:complexType>
-                    </xs:element>
-                    <xs:element name="assertionCode" type="xs:string" minOccurs="0">
-                      <xs:annotation>
-                        <xs:documentation xml:lang="zh">可选 Python 业务断言，建议用 CDATA 保留缩进和特殊字符。必须定义唯一入口 def assert_response(responseBody, globalParam): 并返回 bool；responseBody 为本步响应 JSON，globalParam 为当前已初始化参数字典。示例函数体：return responseBody["code"] == 0。禁止 import；断言在本步参数提取之前执行。省略或空白时使用 HTTP 2xx 判定；提供断言时由返回值决定成功，异常或非布尔返回值导致失败。</xs:documentation>
-                      </xs:annotation>
-                    </xs:element>
-                    <xs:element name="extractParam" type="pair" minOccurs="0" maxOccurs="unbounded">
-                      <xs:annotation>
-                        <xs:documentation xml:lang="zh">可选、可重复的响应提取声明。name 声明新的全局参数，value 为当前响应 JSON 上的表达式，例如 data[0].id；valueType 默认 string，提取数字时须写 integer 或 number。仅支持点分字段和非负整数数组下标，不支持 $ 前缀、通配符、函数或 Python 表达式。字段不存在、值为 null、类型不符或响应不是所需 JSON 时运行失败。该参数仅在本步断言通过且提取成功后可供后续步骤引用。</xs:documentation>
-                      </xs:annotation>
-                    </xs:element>
-                  </xs:sequence>
-                  <xs:attribute name="method" use="required">
-                    <xs:annotation>
-                      <xs:documentation xml:lang="zh">必填、大写 HTTP 方法，仅允许列出的枚举值。与 path 共同精确匹配项目中已导入接口；匹配不到或跨文件匹配到多个接口均拒绝导入，不会自动新建接口。</xs:documentation>
-                    </xs:annotation>
-                    <xs:simpleType>
-                      <xs:restriction base="xs:string">
-                        <xs:enumeration value="GET"/>
-                        <xs:enumeration value="POST"/>
-                        <xs:enumeration value="PUT"/>
-                        <xs:enumeration value="PATCH"/>
-                        <xs:enumeration value="DELETE"/>
-                        <xs:enumeration value="HEAD"/>
-                        <xs:enumeration value="OPTIONS"/>
-                        <xs:enumeration value="TRACE"/>
-                      </xs:restriction>
-                    </xs:simpleType>
-                  </xs:attribute>
-                  <xs:attribute name="path" type="nonEmpty" use="required">
-                    <xs:annotation>
-                      <xs:documentation xml:lang="zh">必填接口定义路径，以 / 开头，例如 /orders/{id}，须保留接口原有路径占位符，不要填写真实 ID、域名、query 或 fragment。运行时与表单 base_url 拼接，路径占位符由 body/kv 的 path 绑定填充。</xs:documentation>
-                    </xs:annotation>
-                  </xs:attribute>
-                </xs:complexType>
               </xs:element>
             </xs:sequence>
-            <xs:attribute name="order" type="xs:positiveInteger" use="required">
-              <xs:annotation>
-                <xs:documentation xml:lang="zh">必填、任务内唯一的正整数，按数值升序执行。可不连续，例如 10、20；不能为 0 或负数。XML 文本中先写 order="20" 再写 order="10"，仍先执行 10。参数依赖也按该排序校验。</xs:documentation>
-              </xs:annotation>
-            </xs:attribute>
           </xs:complexType>
+          <xs:unique name="finallyOrder">
+            <xs:annotation>
+              <xs:documentation xml:lang="zh">仅检查本容器直属 taskStep 的 order 唯一；不同容器可重复。</xs:documentation>
+            </xs:annotation>
+            <xs:selector xpath="taskStep"/>
+            <xs:field xpath="@order"/>
+          </xs:unique>
         </xs:element>
       </xs:sequence>
       <xs:attribute name="name" use="required">
         <xs:annotation>
-          <xs:documentation xml:lang="zh">必填任务名称，去除首尾空白后不能为空，最长 120 字符，在同一项目内必须唯一。重复名称返回冲突，不覆盖现有任务。</xs:documentation>
+          <xs:documentation xml:lang="zh">必填任务名称，同项目唯一，去除首尾空白，不超过 120 字符。</xs:documentation>
         </xs:annotation>
         <xs:simpleType>
           <xs:restriction base="nonEmpty">
@@ -203,7 +516,7 @@
     </xs:complexType>
     <xs:unique name="uniqueOrder">
       <xs:annotation>
-        <xs:documentation xml:lang="zh">XSD 层校验：同一 task 下所有 taskStep 的 order 不得重复。全局参数名唯一、接口归属、参数类型和依赖就绪等约束还会由业务层继续校验，XSD 校验成功不代表可直接运行。</xs:documentation>
+        <xs:documentation xml:lang="zh">仅检查本容器直属 taskStep 的 order 唯一；不同容器可重复。</xs:documentation>
       </xs:annotation>
       <xs:selector xpath="taskStep"/>
       <xs:field xpath="@order"/>

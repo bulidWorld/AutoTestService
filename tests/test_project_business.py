@@ -84,7 +84,6 @@ def test_import_rejections_have_locations(content, code):
 @pytest.mark.parametrize(
     "modify",
     [
-        lambda d: d["components"]["schemas"]["Order"].update({"oneOf": [{"type": "string"}]}),
         lambda d: d["paths"]["/orders"]["post"]["requestBody"].update(
             {"content": {"text/plain": {"schema": {"type": "string"}}}}
         ),

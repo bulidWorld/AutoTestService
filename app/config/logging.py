@@ -9,6 +9,8 @@ from logging.handlers import RotatingFileHandler
 
 from app.config.settings import absolute
 
+step_context = ContextVar("step_context", default={})
+
 request_id = ContextVar("request_id", default="-")
 
 
@@ -28,7 +30,8 @@ class JsonFormatter(logging.Formatter):
             "request_id": request_id.get(),
             "message": record.getMessage(),
         }
-        for field in ("operation", "route", "method", "status", "code", "detail", "issues"):
+        data.update(step_context.get())
+        for field in ("stage", "exception", "stack", "reason", "returncode", "operation", "route", "method", "status", "code", "detail", "issues"):
             if hasattr(record, field):
                 data[field] = getattr(record, field)
         # Record code locations without exception text, source lines or local values.

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<database name="auto_test_service" dialect="postgresql">
+  <statements>
+    <statement id="step-run-correlation-id">
+      <description>每次步骤运行的全局唯一标识，独立于任务运行 ID</description>
+      <sql>ALTER TABLE task_run_steps ADD COLUMN IF NOT EXISTS step_run_id text NOT NULL DEFAULT gen_random_uuid()::text</sql>
+    </statement>
+    <statement id="step-run-correlation-id-unique">
+      <sql>CREATE UNIQUE INDEX IF NOT EXISTS task_run_steps_step_run_id_uq ON task_run_steps(step_run_id)</sql>
+    </statement>
+  </statements>
+</database>

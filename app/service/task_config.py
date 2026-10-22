@@ -8,8 +8,10 @@ from urllib.parse import quote, urlencode, urlsplit
 
 from jsonschema import Draft4Validator, Draft202012Validator
 
-from app.service.assertions import validate_assertion
+from app.service.assertions import assertion_parameters, validate_assertion
 from app.service.errors import BusinessError, invalid
+from app.service.task_expressions import expression_parameters, validate_expressions
+from app.service.task_semantics import auth_headers, validate_options
 
 TYPES = {
     "string": lambda v: isinstance(v, str),
@@ -30,6 +32,11 @@ FORBIDDEN_HEADERS = {
     "content-length",
     "transfer-encoding",
     "connection",
+    "keep-alive",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "upgrade",
     "method",
     "url",
     "base_url",
@@ -202,16 +209,46 @@ def global_binding_name(binding):
 def build_request(task, step, values=None, declarations=None):
     """Validate and render one request. Declarations enable static checks without REST calls."""
     interface, document = step["interface"], step["document"]
+    options = step.get("options") or {}
+    overrides = {
+        location
+        for key, location in (("raw_path", "path"), ("raw_query", "query"))
+        if key in options
+    }
+    auth_mode = (options.get("auth") or {}).get("mode")
+    manual_auth = [h for h in step.get("headers", []) if h["name"].lower() == "authorization"]
+    if auth_mode == "header" and len(manual_auth) != 1:
+        invalid("auth header 模式须显式提供一个 Authorization 头", "steps.options.auth")
+    if "auth" in options and auth_mode != "header" and manual_auth:
+        invalid("auth 与显式 Authorization 请求头互斥", "steps.options.auth")
     bodydef = interface.get("request_body")
-    if bodydef and bodydef["content_type"] != "application/json":
-        invalid("本阶段不支持 multipart 执行", "steps.bindings")
     parameters = {
         (p["location"], p["name"].lower() if p["location"] == "header" else p["name"]): p
         for p in interface["parameters"]
     }
+    raw = step.get("raw_body")
+    if raw is not None and (
+        not isinstance(raw, dict)
+        or set(raw) != {"text"}
+        or not isinstance(raw["text"], str)
+        or not bodydef
+        or bodydef["content_type"] != "application/json"
+        or any(f["location"] == "body" for f in step["bindings"])
+    ):
+        raise BusinessError(
+            400,
+            "RAW_BODY_CONFLICT",
+            "原始体必须为 JSON 接口的 text 对象且不能与 body 绑定混用",
+            "steps.raw_body",
+        )
+    if bodydef and bodydef["content_type"] != "application/json":
+        invalid("不支持 multipart 执行", "steps.bindings")
+    if any(f["location"] not in {"path", "query", "body"} for f in step["bindings"]):
+        invalid("bindings 仅允许 path/query/body，请求头请使用 headers", "steps.bindings")
+    fields = list(step["bindings"]) + [dict(h, location="header") for h in step.get("headers", [])]
     bound, query, headers, path, body = set(), [], [], interface["path"], None
     body_fields, dynamic_body = [], False
-    for field in step["bindings"]:
+    for field in fields:
         location, name, binding = field["location"], field["name"], field["binding"]
         key = (location, name.lower() if location == "header" else name)
         if key in bound:
@@ -234,6 +271,8 @@ def build_request(task, step, values=None, declarations=None):
             schema = {"type": "string"}
         else:
             invalid("绑定的接口参数不存在", "steps.bindings")
+        if location == "header" and name.lower() == "authorization" and auth_mode == "header":
+            schema = {"type": "string"}
         if location == "header" and (
             name.lower() in FORBIDDEN_HEADERS
             or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name)
@@ -243,7 +282,9 @@ def build_request(task, step, values=None, declarations=None):
         if parameter_name is not None:
             if declarations is not None:
                 if parameter_name not in declarations:
-                    invalid("全局参数不存在或未初始化", "steps.bindings")
+                    raise BusinessError(
+                        400, "PARAMETER_NOT_AVAILABLE", "全局参数不存在或尚未发布", "steps.bindings"
+                    )
                 declaration = declarations[parameter_name]
                 kind = declaration["value_type"]
                 expected = schema.get("type") if isinstance(schema, dict) else None
@@ -264,7 +305,9 @@ def build_request(task, step, values=None, declarations=None):
                         dynamic_body = True
             else:
                 if parameter_name not in (values or {}):
-                    invalid("全局参数未初始化", "steps.bindings")
+                    raise BusinessError(
+                        400, "PARAMETER_NOT_AVAILABLE", "全局参数尚未发布", "steps.bindings"
+                    )
                 value = values[parameter_name]
                 validate_json(value, schema, document, "steps.bindings")
         else:
@@ -292,11 +335,13 @@ def build_request(task, step, values=None, declarations=None):
         elif location == "body":
             body = assign_body(body, name, value, bodydef["schema"], document)
     for key, parameter in parameters.items():
+        if key[0] in overrides or (key == ("header", "authorization") and "auth" in options):
+            continue
         if parameter["required"] and key not in bound:
             invalid("缺少必填接口参数 " + parameter["name"], "steps.bindings")
-    if "{" in path or "}" in path:
+    if "path" not in overrides and ("{" in path or "}" in path):
         invalid("路径参数未完整绑定", "steps.bindings")
-    if bodydef:
+    if bodydef and raw is None:
         if body is not None and dynamic_body:
             for error in schema_validator(bodydef["schema"], document).iter_errors(body):
                 if error.validator == "required":
@@ -314,21 +359,42 @@ def build_request(task, step, values=None, declarations=None):
                 invalid("JSON 请求体 Content-Type 必须为 application/json", "steps.bindings")
         if body is not None and not any(h["name"].lower() == "content-type" for h in headers):
             headers.append({"name": "Content-Type", "value": "application/json"})
+    if raw is not None:
+        for header in headers:
+            if (
+                header["name"].lower() == "content-type"
+                and header["value"].strip().lower() != "application/json"
+            ):
+                invalid("原始请求体 Content-Type 必须为 application/json", "steps.headers")
+        if not any(h["name"].lower() == "content-type" for h in headers):
+            headers.append({"name": "Content-Type", "value": "application/json"})
     if "?" in path or "#" in path or not path.startswith("/"):
         invalid("接口路径不得包含 query 或 fragment", "steps.bindings")
     base = urlsplit(task["base_url"])
-    actual_path = base.path.rstrip("/") + "/" + path.lstrip("/")
+    actual_path = (
+        base.path.rstrip("/") + options["raw_path"]
+        if "raw_path" in options
+        else base.path.rstrip("/") + "/" + path.lstrip("/")
+    )
+    headers.extend(auth_headers(step, values, declarations))
     url = base._replace(
-        path=quote(actual_path, safe="/%:@!$&'()*+,;=-._~"), query=urlencode(query)
+        path=actual_path
+        if "raw_path" in options
+        else quote(actual_path, safe="/%:@!$&'()*+,;=-._~"),
+        query=options.get("raw_query", urlencode(query)),
     ).geturl()
 
     return {
         "method": interface["method"],
         "actual_url": url,
         "request_headers": headers,
-        "request_body": json.dumps(body, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-        if body is not None
-        else None,
+        "request_body": raw["text"]
+        if raw is not None
+        else (
+            json.dumps(body, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+            if body is not None
+            else None
+        ),
     }
 
 
@@ -359,9 +425,12 @@ def validate_config(task, run=False, allow_collection_inputs=False):
         invalid("运行地址必须为无凭据、query 或 fragment 的 HTTP/HTTPS 地址", "body.base_url")
     if run and not task["steps"]:
         invalid("运行至少一个步骤", "body.steps")
-    declarations, steps = {}, {s["id"]: s for s in task["steps"]}
-    if len(steps) != len(task["steps"]):
-        invalid("步骤 ID 重复", "body.steps")
+    from app.service.task_nodes import parameter_sources, siblings, validate_structure
+
+    validate_structure(task)
+    if run and not siblings(task):
+        invalid("运行至少一个主流程根节点", "body.steps")
+    declarations = {}
     for i, p in enumerate(task["global_parameters"]):
         p["name"] = p["name"].strip()
         p.setdefault("source_type", "fixed")
@@ -370,41 +439,81 @@ def validate_config(task, run=False, allow_collection_inputs=False):
         if p["source_type"] == "fixed" and not TYPES[p["value_type"]](p.get("value")):
             invalid("固定参数类型不匹配或缺少值", f"body.global_parameters.{i}.value")
         declarations[p["name"]] = p
-    inherited_names = set(task.get("collection_available", []))
-    if allow_collection_inputs and not run:
-        # A saved draft may need a previous collection batch. Standalone starts and
-        # collection starts still require a proven producer before any HTTP request.
-        inherited_names.update(
-            p["name"] for p in declarations.values() if p["source_type"] == "rest"
-        )
-    ready = {n: declarations[n] for n in inherited_names if n in declarations}
-    for kind, item in execution_plan(task):
-        if kind == "parameter":
-            ready[item["name"]] = item
-        else:
-            build_request(task, item, declarations=ready)
-    return task
-
-
-def execution_plan(task):
-    """Fixed values first, then each request followed by its response assignments."""
-    sources = {}
-    step_ids = {step["id"] for step in task["steps"]}
-    for parameter in task["global_parameters"]:
-        if parameter["source_type"] == "fixed":
-            yield "parameter", parameter
-            continue
-        source = parameter.get("rest_source") or {}
-        if set(source) != {"step_id", "extract_expression"}:
-            invalid("REST 参数必须绑定本任务步骤及取值表达式", "rest_source")
-        expression_tokens(source["extract_expression"])
-        if source["step_id"] not in step_ids:
-            invalid("REST 引用的步骤不存在或不属于本任务", "rest_source.step_id")
-        sources.setdefault(source["step_id"], []).append(parameter)
     for step in task["steps"]:
-        yield "step", step
-        for parameter in sources.get(step["id"], []):
-            yield "parameter", parameter
+        validate_options(step, declarations)
+        validate_expressions(step, declarations)
+    sources = parameter_sources(task)
+    inherited = set(task.get("collection_available", []))
+    if allow_collection_inputs and not run:
+        main_ids = {s["id"] for s in task["steps"] if s["execution_scope"] == "main"}
+        inherited.update(
+            p["name"]
+            for p in declarations.values()
+            if p["source_type"] == "rest" and p["rest_source"]["step_id"] in main_ids
+        )
+    ready = {
+        n: p
+        for n, p in declarations.items()
+        if p["source_type"] == "fixed" or (n in inherited and p["source_type"] != "expression")
+    }
+
+    def check(step, available):
+        if step["step_type"] == "compute":
+            references = set()
+            for item in step["options"]["expressions"]:
+                references.update(
+                    expression_parameters(item["expression"], "steps.options.expressions")
+                )
+            if references - available.keys():
+                invalid("表达式只能读取执行前已可用的参数", "steps.options.expressions")
+            for item in step["options"]["expressions"]:
+                dependencies = expression_parameters(
+                    item["expression"], "steps.options.expressions"
+                )
+                if any(available[name].get("sensitive") for name in dependencies):
+                    declarations[item["name"]]["sensitive"] = True
+            return
+        dynamic_wait = (step.get("options") or {}).get("wait")
+        if dynamic_wait and dynamic_wait["parameter"] not in available:
+            invalid("动态等待依赖尚未可用的参数", "steps.options.wait.parameter")
+        if (
+            dynamic_wait
+            and "offset_parameter" in dynamic_wait
+            and dynamic_wait["offset_parameter"] not in available
+        ):
+            invalid("动态等待偏移依赖尚未可用的参数", "steps.options.wait.offset_parameter")
+        if step["step_type"] != "rest":
+            return
+        missing = assertion_parameters(step.get("assertion_code"), declarations) - available.keys()
+        if missing:
+            raise BusinessError(
+                400,
+                "PARAMETER_NOT_AVAILABLE",
+                "断言依赖未声明或尚未发布的参数",
+                "steps.assertion_code",
+            )
+        try:
+            build_request(task, step, declarations=available)
+        except BusinessError as exc:
+            index = next(i for i, s in enumerate(task["steps"]) if s["id"] == step["id"])
+            for issue in exc.payload["issues"]:
+                issue["location"] = issue["location"].replace("steps", f"body.steps.{index}", 1)
+            raise
+
+    for step in siblings(task):
+        if step["step_type"] == "parallel":
+            outputs = {}
+            for child in siblings(task, parent=step["id"]):
+                check(child, ready)
+                outputs.update((p["name"], p) for p in sources.get(child["id"], []))
+            ready.update(outputs)
+        else:
+            check(step, ready)
+            ready.update((p["name"], p) for p in sources.get(step["id"], []))
+    for step in siblings(task, "finally"):
+        check(step, ready)
+        ready.update((p["name"], p) for p in sources.get(step["id"], []))
+    return task
 
 
 def sensitive_values(task, values=None):
@@ -415,8 +524,8 @@ def sensitive_values(task, values=None):
             if value is not None:
                 result.extend(secret_strings(value))
     for step in task["steps"]:
-        for field in step["bindings"]:
-            if field["location"] == "header" and field["name"].lower() in SECRET_HEADERS:
+        for field in step.get("headers", []):
+            if field["name"].lower() in SECRET_HEADERS:
                 b = field["binding"]
                 parameter_name = global_binding_name(b)
                 if parameter_name is None:
@@ -450,14 +559,18 @@ def safe_task(task):
         if p["redacted"]:
             p.pop("value", None)
     for step in result["steps"]:
-        for field in step["bindings"]:
+        for field in step.get("bindings", []) + step.get("headers", []):
             b = field["binding"]
             if b["kind"] == "literal":
                 b["redacted"] = (
-                    field["location"] == "header" and field["name"].lower() in SECRET_HEADERS
+                    field.get("location", "header") == "header"
+                    and field["name"].lower() in SECRET_HEADERS
                 )
                 if b["redacted"]:
                     b.pop("value", None)
+        step.pop("task_id", None)
+        step.pop("created_at", None)
+        step.pop("updated_at", None)
         step.pop("interface", None)
         step.pop("document", None)
     secrets = sensitive_values(task)
@@ -468,7 +581,7 @@ def safe_task(task):
         if "value" in parameter:
             parameter["value"] = scrub(parameter["value"], secrets)
     for step in result["steps"]:
-        for field in step["bindings"]:
+        for field in step.get("bindings", []) + step.get("headers", []):
             binding = field["binding"]
             if binding["kind"] == "literal" and "value" in binding:
                 safe = scrub(binding["value"], secrets)

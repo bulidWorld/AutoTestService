@@ -8,15 +8,15 @@
     <rest method="GET" path="/init">
       <header><name>X-Client</name><value>{client}</value></header>
       <assertionCode><![CDATA[
-def assert_response(responseBody, globalParam):
-    return responseBody["data"][0]["id"] > 0
+def assert_response(responseBody, globalParam, statusCode, headers):
+    return statusCode == 200 and responseBody["data"][0]["id"] > 0
 ]]></assertionCode>
       <extractParam valueType="integer"><name>id</name><value>data[0].id</value></extractParam>
     </rest>
   </taskStep>
   <taskStep order="2">
     <rest method="GET" path="/orders/{id}">
-      <body><kv location="path"><parameter>id</parameter></kv></body>
+      <pathParams><kv><parameter>id</parameter></kv></pathParams>
     </rest>
   </taskStep>
 </task>

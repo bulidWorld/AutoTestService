@@ -1,0 +1,101 @@
+<?xml version='1.0' encoding='utf-8'?>
+<database name="auto_test_service" dialect="postgresql" source="context/requirement/3-1.extend_task_xsd/design.md">
+  <statements>
+    <statement id="execution-nodes-task_steps-step_type">
+      <description>节点类型 rest/wait/parallel；组合与取值由业务校验</description>
+      <sql>ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS step_type varchar(16) DEFAULT 'rest' NOT NULL</sql>
+    </statement>
+    <statement id="execution-nodes-task_steps-execution_scope">
+      <description>main 主流程 / finally 清理流程</description>
+      <sql>ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS execution_scope varchar(16) DEFAULT 'main' NOT NULL</sql>
+    </statement>
+    <statement id="execution-nodes-task_steps-parent_step_id">
+      <description>本任务 main 根 parallel 父节点 ID；根节点为 NULL，业务校验归属与深度</description>
+      <sql>ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS parent_step_id integer</sql>
+    </statement>
+    <statement id="execution-nodes-task_steps-wait_milliseconds">
+      <description>仅 wait 使用，固定等待 1～2592000000 毫秒，或 options.wait 动态等待</description>
+      <sql>ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS wait_milliseconds integer</sql>
+    </statement>
+    <statement id="execution-nodes-task_steps-max_concurrency">
+      <description>仅 parallel 使用，活动子步骤上限 1～8，配置必填</description>
+      <sql>ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS max_concurrency integer</sql>
+    </statement>
+    <statement id="execution-nodes-task_steps-headers">
+      <description>独立请求头绑定数组，仅含 name/binding；名称大小写不敏感且唯一</description>
+      <sql>ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS headers jsonb DEFAULT '[]'::jsonb NOT NULL</sql>
+    </statement>
+    <statement id="execution-nodes-task_steps-raw_body">
+      <description>仅 REST 使用且仅保存 text:string；原文不脱敏、不解析、不插值，与 body 绑定互斥；空 text 发送零字节</description>
+      <sql>ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS raw_body jsonb</sql>
+    </statement>
+    <statement id="execution-nodes-task_run_steps-step_type">
+      <description>快照节点类型 rest/wait/parallel</description>
+      <sql>ALTER TABLE task_run_steps ADD COLUMN IF NOT EXISTS step_type varchar(16) DEFAULT 'rest' NOT NULL</sql>
+    </statement>
+    <statement id="execution-nodes-task_run_steps-execution_scope">
+      <description>快照执行范围 main/finally</description>
+      <sql>ALTER TABLE task_run_steps ADD COLUMN IF NOT EXISTS execution_scope varchar(16) DEFAULT 'main' NOT NULL</sql>
+    </statement>
+    <statement id="execution-nodes-task_run_steps-parent_run_step_id">
+      <description>运行父节点 ID；启动事务创建全部节点后第二遍映射，根节点 NULL</description>
+      <sql>ALTER TABLE task_run_steps ADD COLUMN IF NOT EXISTS parent_run_step_id integer</sql>
+    </statement>
+    <statement id="execution-nodes-task_run_steps-parallel_stats">
+      <description>仅 parallel 父节点保存 REST 汇总：rest_total、pending/running/succeeded/failed/blocked/skipped_count、request_count、response_count、response_time_sum_ms、avg/max/min_response_time_ms；无完整响应时 sum=0、avg/max/min=null，耗时保留三位小数；与子节点终态短事务原子合并，不保存逐请求响应或耗时明细</description>
+      <sql>ALTER TABLE task_run_steps ADD COLUMN IF NOT EXISTS parallel_stats jsonb</sql>
+    </statement>
+    <statement id="execution-nodes-task_run_parameters-published">
+      <description>已发布到本任务上下文；参数独立赋值，缺失为 null，失败屏障收尾后也发布已赋值；任务组共享发布仍依赖成员及批次成功</description>
+      <sql>ALTER TABLE task_run_parameters ADD COLUMN IF NOT EXISTS published boolean DEFAULT false NOT NULL</sql>
+    </statement>
+    <statement id="execution-nodes-task_runs-execution_stage">
+      <description>main/finally/finished；清理结束前 status 保持 running</description>
+      <sql>ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS execution_stage varchar(16) DEFAULT 'main' NOT NULL</sql>
+    </statement>
+    <statement id="execution-nodes-task_runs-primary_error_code">
+      <description>主流程第一失败分类，清理失败不得覆盖</description>
+      <sql>ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS primary_error_code varchar(64)</sql>
+    </statement>
+    <statement id="execution-nodes-task_runs-primary_error_message">
+      <description>主流程失败摘要，不包含并发子请求响应内容</description>
+      <sql>ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS primary_error_message text</sql>
+    </statement>
+    <statement id="execution-nodes-task_runs-cleanup_status">
+      <description>pending/running/succeeded/failed/skipped；无 finally 为 skipped</description>
+      <sql>ALTER TABLE task_runs ADD COLUMN IF NOT EXISTS cleanup_status varchar(16) DEFAULT 'pending' NOT NULL</sql>
+    </statement>
+    <statement id="execution-nodes-task_steps-interface_id-nullable">
+      <description>wait/parallel 无接口绑定，接口字段允许 NULL</description>
+      <sql>ALTER TABLE task_steps ALTER COLUMN interface_id DROP NOT NULL</sql>
+    </statement>
+    <statement id="execution-nodes-task_steps-file_id-nullable">
+      <description>wait/parallel 无接口绑定，接口字段允许 NULL</description>
+      <sql>ALTER TABLE task_steps ALTER COLUMN file_id DROP NOT NULL</sql>
+    </statement>
+    <statement id="execution-nodes-task_steps-version-nullable">
+      <description>wait/parallel 无接口绑定，接口字段允许 NULL</description>
+      <sql>ALTER TABLE task_steps ALTER COLUMN version DROP NOT NULL</sql>
+    </statement>
+    <statement id="execution-nodes-ix_task_steps_task_scope_parent_position">
+      <description>执行树范围、父节点、兄弟排序索引</description>
+      <sql>CREATE INDEX IF NOT EXISTS ix_task_steps_task_scope_parent_position ON task_steps (task_id, execution_scope, parent_step_id, position, id)</sql>
+    </statement>
+    <statement id="execution-nodes-ix_task_run_steps_run_scope_parent_position">
+      <description>执行树范围、父节点、兄弟排序索引</description>
+      <sql>CREATE INDEX IF NOT EXISTS ix_task_run_steps_run_scope_parent_position ON task_run_steps (run_id, execution_scope, parent_run_step_id, position, id)</sql>
+    </statement>
+    <statement id="execution-policy-options">
+      <description>显式鉴权、条件、参数更新、动态等待及负向路径查询策略</description>
+      <sql>ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS options jsonb DEFAULT '{}'::jsonb NOT NULL</sql>
+    </statement>
+    <statement id="execution-policy-long-wait">
+      <description>固定等待毫秒扩展为 bigint，支持最长 30 天</description>
+      <sql>ALTER TABLE task_steps ALTER COLUMN wait_milliseconds TYPE bigint</sql>
+    </statement>
+    <statement id="execution-compute-expression-source">
+      <description>运行时受限表达式参数来源；与 rest_source 独立，复制和快照保留节点引用</description>
+      <sql>ALTER TABLE task_parameters ADD COLUMN IF NOT EXISTS expression_source jsonb</sql>
+    </statement>
+  </statements>
+</database>

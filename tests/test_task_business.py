@@ -18,13 +18,26 @@ from openapi_schema_validator import OAS30Validator
 from openapi_spec_validator import validate
 
 from app.api.contract import load_contract
-from app.config.settings import ROOT
+from app.config.settings import ROOT, load_settings
 from app.main import create_app
 from app.repository.database import connect
 from app.service.errors import BusinessError
 from app.service.task_config import build_request, extract, validate_config
 
 SPEC = load_contract(ROOT / "docs/ rest-api/rest-task.yaml")
+
+
+def task_steps(steps):
+    """Build flat REST fixture nodes using the current public configuration model."""
+    result = copy.deepcopy(steps)
+    for position, step in enumerate(result, 1):
+        step.update(step_type="rest", execution_scope="main", position=position)
+        step.setdefault("headers", [])
+        for binding in step.get("bindings", [])[:]:
+            if binding["location"] == "header":
+                step["bindings"].remove(binding)
+                step["headers"].append({"name": binding["name"], "binding": binding["binding"]})
+    return result
 
 
 def schema_check(response, name, status=200):
@@ -43,23 +56,41 @@ def schema_check(response, name, status=200):
     return response.json()
 
 
+def schema_check_list(response, name, status=200):
+    assert response.status_code == status, response.text
+    from jsonschema import RefResolver
+
+    specification = (
+        SPEC
+        if name in SPEC["components"]["schemas"]
+        else load_contract(ROOT / "docs/ rest-api/rest-parameter.yaml")
+    )
+    OAS30Validator(
+        {"type": "array", "items": {"$ref": f"#/components/schemas/{name}"}},
+        resolver=RefResolver.from_schema(specification),
+    ).validate(response.json())
+    return response.json()
+
+
 def bare_config():
     return {
         "base_url": "http://localhost/prefix",
         "global_parameters": [],
-        "steps": [
-            {
-                "id": 1,
-                "bindings": [],
-                "interface": {
-                    "method": "GET",
-                    "path": "/ok",
-                    "parameters": [],
-                    "request_body": None,
-                },
-                "document": {},
-            }
-        ],
+        "steps": task_steps(
+            [
+                {
+                    "id": 1,
+                    "bindings": [],
+                    "interface": {
+                        "method": "GET",
+                        "path": "/ok",
+                        "parameters": [],
+                        "request_body": None,
+                    },
+                    "document": {},
+                }
+            ]
+        ),
     }
 
 
@@ -178,6 +209,9 @@ def test_placeholder_uses_typed_global_value(location):
             "binding": {"kind": "literal", "value": "{test_pro_id}"},
         }
     ]
+    if location == "header":
+        step["headers"] = [{"name": name, "binding": step["bindings"][0]["binding"]}]
+        step["bindings"] = []
     original = copy.deepcopy(config)
     validate_config(config)
     request = build_request(config, step, values={"test_pro_id": 42})
@@ -202,9 +236,8 @@ def test_placeholder_checks_dynamic_order_type_and_secret_headers():
 
     config = bare_config()
     step = config["steps"][0]
-    step["bindings"] = [
+    step["headers"] = [
         {
-            "location": "header",
             "name": "Authorization",
             "binding": {"kind": "literal", "value": "{token}"},
         }
@@ -241,7 +274,7 @@ def test_both_contracts_registered_with_valid_references(monkeypatch):
                     "name": "x",
                     "base_url": "http://localhost",
                     "global_parameters": [],
-                    "steps": [],
+                    "steps": task_steps([]),
                     "unknown": 1,
                 },
             ).status_code
@@ -329,7 +362,14 @@ def database(monkeypatch, tmp_path):
 
     monkeypatch.setattr("app.repository.projects.connect", isolated)
     config = tmp_path / "settings.yaml"
-    config.write_text(yaml.safe_dump({"logging": {"directory": str(tmp_path / "logs")}}))
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "database": load_settings()["database"],
+                "logging": {"directory": str(tmp_path / "logs")},
+            }
+        )
+    )
     monkeypatch.setenv("APP_CONFIG", str(config))
     yield isolated
     with connect() as db:
@@ -392,7 +432,7 @@ def asset(api, server):
             "name": "task-" + uuid4().hex,
             "base_url": server["url"],
             "global_parameters": [],
-            "steps": [copy.deepcopy(steps[n]) for n in names],
+            "steps": task_steps([copy.deepcopy(steps[n]) for n in names]),
         }
         created = schema_check(api.post(p + "/tasks", json=payload), "Task", 201)
         return p + "/tasks/" + str(created["id"]), created
@@ -404,7 +444,7 @@ def wait_run(api, t, rid):
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         data = schema_check(api.get(t + f"/runs/{rid}"), "RunDetail")
-        if data["run"]["status"] in ["succeeded", "failed"]:
+        if data["run"]["status"] in ["succeeded", "failed", "blocked"]:
             return data
         time.sleep(0.03)
     pytest.fail("run did not finish")
@@ -435,34 +475,36 @@ def test_dynamic_shared_step_typed_request_and_history(api, server, database, pl
             {"name": "data", "source_type": "fixed", "value_type": "object", "value": {"a": 1}},
             {"name": "ids", "source_type": "fixed", "value_type": "array", "value": [1, 2]},
         ],
-        "steps": [
-            dict(steps["/init"], id=sid),
-            dict(
-                steps["/orders/{id}"],
-                bindings=[
-                    {
-                        "location": "path",
-                        "name": "id",
-                        "binding": {"kind": "global", "parameter_name": "order_id"},
-                    },
-                    {
-                        "location": "query",
-                        "name": "id",
-                        "binding": {"kind": "global", "parameter_name": "ids"},
-                    },
-                    {
-                        "location": "header",
-                        "name": "Authorization",
-                        "binding": {"kind": "global", "parameter_name": "token"},
-                    },
-                    {
-                        "location": "body",
-                        "name": "/data",
-                        "binding": {"kind": "global", "parameter_name": "data"},
-                    },
-                ],
-            ),
-        ],
+        "steps": task_steps(
+            [
+                dict(steps["/init"], id=sid),
+                dict(
+                    steps["/orders/{id}"],
+                    bindings=[
+                        {
+                            "location": "path",
+                            "name": "id",
+                            "binding": {"kind": "global", "parameter_name": "order_id"},
+                        },
+                        {
+                            "location": "query",
+                            "name": "id",
+                            "binding": {"kind": "global", "parameter_name": "ids"},
+                        },
+                        {
+                            "location": "header",
+                            "name": "Authorization",
+                            "binding": {"kind": "global", "parameter_name": "token"},
+                        },
+                        {
+                            "location": "body",
+                            "name": "/data",
+                            "binding": {"kind": "global", "parameter_name": "data"},
+                        },
+                    ],
+                ),
+            ]
+        ),
     }
     if placeholder:
         for field in payload["steps"][1]["bindings"]:
@@ -492,7 +534,7 @@ def test_dynamic_shared_step_typed_request_and_history(api, server, database, pl
             json={
                 "base_url": server["url"],
                 "global_parameters": payload["global_parameters"],
-                "steps": [dict(s) for s in payload["steps"] if "id" in s],
+                "steps": task_steps([dict(s) for s in payload["steps"] if "id" in s]),
                 "parameter_name": "order_id",
             },
         ),
@@ -540,7 +582,7 @@ def test_dynamic_shared_step_typed_request_and_history(api, server, database, pl
     [
         ("/fail", "HTTP_STATUS_ERROR"),
         ("/redirect", "HTTP_STATUS_ERROR"),
-        ("/not-json", "RESPONSE_NOT_JSON"),
+        ("/not-json", None),
     ],
 )
 def test_initialization_failure_skips_unexecuted_work(api, server, failure, code):
@@ -558,14 +600,16 @@ def test_initialization_failure_skips_unexecuted_work(api, server, failure, code
                 "rest_source": {"step_id": sid, "extract_expression": "data.a"},
             }
         ],
-        "steps": [dict(steps[failure], id=sid), dict(steps["/ok"], id=created["steps"][1]["id"])],
+        "steps": task_steps(
+            [dict(steps[failure], id=sid), dict(steps["/ok"], id=created["steps"][1]["id"])]
+        ),
     }
     assert api.put(t, json=body).status_code == 200
     rid = api.post(t + "/runs").json()["id"]
     result = wait_run(api, t, rid)
     assert result["run"]["error_code"] == code
-    assert [s["status"] for s in result["steps"]] == ["failed", "skipped"]
-    assert len(server["calls"]) == 1
+    assert [s["status"] for s in result["steps"]] == (["failed", "skipped"] if code else ["succeeded", "succeeded"])
+    assert len(server["calls"]) == (1 if code else 2)
 
 
 def test_concurrency_snapshot_edit_and_delete_restrictions(api, server):
@@ -585,9 +629,9 @@ def test_concurrency_snapshot_edit_and_delete_restrictions(api, server):
         "name": created["name"],
         "base_url": server["url"],
         "global_parameters": [],
-        "steps": [dict(steps["/fail"], id=created["steps"][1]["id"])],
+        "steps": task_steps([dict(steps["/fail"], id=created["steps"][1]["id"])]),
     }
-    assert api.put(t, json=changed).status_code == 200
+    assert api.put(t, json=changed).status_code == 409
     server["release"].set()
     result = wait_run(api, t, r["id"])
     assert result["run"]["status"] == "succeeded"
@@ -665,10 +709,14 @@ def test_timeout_and_connection_errors_are_distinct(api, server, failure):
         "base_url": base_url,
         "timeout_seconds": 1,
         "global_parameters": [],
-        "steps": [
-            dict(steps["/slow" if failure == "timeout" else "/ok"], id=created["steps"][0]["id"]),
-            dict(steps["/ok"], id=created["steps"][1]["id"]),
-        ],
+        "steps": task_steps(
+            [
+                dict(
+                    steps["/slow" if failure == "timeout" else "/ok"], id=created["steps"][0]["id"]
+                ),
+                dict(steps["/ok"], id=created["steps"][1]["id"]),
+            ]
+        ),
     }
     assert api.put(t, json=body).status_code == 200
     rid = api.post(t + "/runs").json()["id"]
@@ -703,13 +751,15 @@ def test_sensitive_failed_extraction_does_not_expose_response(api, server, expr,
                 "rest_source": {"step_id": sid, "extract_expression": expr},
             }
         ],
-        "steps": [dict(steps["/init"], id=sid), dict(steps["/ok"], id=created["steps"][1]["id"])],
+        "steps": task_steps(
+            [dict(steps["/init"], id=sid), dict(steps["/ok"], id=created["steps"][1]["id"])]
+        ),
     }
     assert api.put(t, json=body).status_code == 200
     rid = api.post(t + "/runs").json()["id"]
     result = wait_run(api, t, rid)
-    assert result["run"]["error_code"] == code
-    assert [s["status"] for s in result["steps"]] == ["failed", "skipped"]
+    assert result["run"]["status"] == "succeeded"
+    assert all(s["status"] == "succeeded" for s in result["steps"])
     qid = result["global_parameters"][0]["request_id"]
     assert qid is not None
     request = schema_check(api.get(t + f"/runs/{rid}/requests/{qid}"), "Request")
@@ -723,7 +773,7 @@ def test_sensitive_fixed_edit_preserves_value_and_validates_ownership(api, serve
     base = {
         "name": created["name"],
         "base_url": server["url"],
-        "steps": [dict(steps["/ok"], id=created["steps"][0]["id"])],
+        "steps": task_steps([dict(steps["/ok"], id=created["steps"][0]["id"])]),
         "global_parameters": [
             {
                 "name": "credential",
@@ -763,7 +813,7 @@ def test_foreign_interfaces_and_duplicate_task_names_rejected(api, server):
         "name": created["name"],
         "base_url": server["url"],
         "global_parameters": [],
-        "steps": [steps["/ok"]],
+        "steps": task_steps([steps["/ok"]]),
     }
     assert api.post(p + "/tasks", json=body).status_code == 409
     assert api.post(f"/api/v1/projects/{other_project}/tasks", json=body).status_code == 404
@@ -783,16 +833,15 @@ def test_declared_sensitive_fixed_values_never_change_binding_types():
             "sensitive": True,
         }
     ]
-    config["steps"][0]["bindings"] = [
+    config["steps"][0]["headers"] = [
         {
-            "location": "header",
             "name": "Authorization",
             "binding": {"kind": "literal", "value": "PRIVATE_HEADER"},
         }
     ]
     safe = safe_task(config)
     assert "value" not in safe["global_parameters"][0]
-    assert safe["steps"][0]["bindings"][0]["binding"] == {"kind": "literal", "redacted": True}
+    assert safe["steps"][0]["headers"][0]["binding"] == {"kind": "literal", "redacted": True}
 
 
 def test_sensitive_literal_edit_requires_existing_redacted_binding(api, server):
@@ -803,29 +852,31 @@ def test_sensitive_literal_edit_requires_existing_redacted_binding(api, server):
         "name": created["name"],
         "base_url": server["url"],
         "global_parameters": [],
-        "steps": [
-            dict(
-                steps["/ok"],
-                id=sid,
-                bindings=[
-                    {
-                        "location": "header",
-                        "name": "Authorization",
-                        "binding": {"kind": "literal", "value": "PRIVATE_LITERAL"},
-                    },
-                    {
-                        "location": "header",
-                        "name": "X-Label",
-                        "binding": {"kind": "literal", "value": "public"},
-                    },
-                ],
-            )
-        ],
+        "steps": task_steps(
+            [
+                dict(
+                    steps["/ok"],
+                    id=sid,
+                    bindings=[
+                        {
+                            "location": "header",
+                            "name": "Authorization",
+                            "binding": {"kind": "literal", "value": "PRIVATE_LITERAL"},
+                        },
+                        {
+                            "location": "header",
+                            "name": "X-Label",
+                            "binding": {"kind": "literal", "value": "public"},
+                        },
+                    ],
+                )
+            ]
+        ),
     }
     assert api.put(t, json=body).status_code == 200
-    del body["steps"][0]["bindings"][0]["binding"]["value"]
+    del body["steps"][0]["headers"][0]["binding"]["value"]
     assert api.put(t, json=body).status_code == 200
-    del body["steps"][0]["bindings"][1]["binding"]["value"]
+    del body["steps"][0]["headers"][1]["binding"]["value"]
     assert api.put(t, json=body).status_code == 400
 
 
@@ -861,6 +912,7 @@ def test_step_assignments_follow_pipeline_order(monkeypatch):
     first = config["steps"][0]
     second = copy.deepcopy(first)
     second["id"] = 2
+    second["position"] = 2
     second["interface"]["path"] = "/next"
     second["interface"]["parameters"] = [
         {"name": "id", "location": "query", "required": True, "schema": {"type": "integer"}}
@@ -899,6 +951,8 @@ def test_step_assignments_follow_pipeline_order(monkeypatch):
     assert preview(config, "key2")["value"] == 2
     assert urls == ["http://localhost/prefix/ok", "http://localhost/prefix/next?id=1"]
     config["steps"].reverse()
+    validate_config(config)
+    config["steps"][0]["position"], config["steps"][1]["position"] = 1, 2
     with pytest.raises(BusinessError):
         validate_config(config)
 
@@ -924,7 +978,20 @@ def test_run_keeps_steps_before_parameter_source(api, server):
     }
     # Use the editable step fields accepted by the write contract.
     payload["steps"] = [
-        {key: step[key] for key in ["id", "interface_id", "file_id", "version", "bindings"]}
+        {
+            key: step[key]
+            for key in [
+                "id",
+                "step_type",
+                "execution_scope",
+                "position",
+                "headers",
+                "interface_id",
+                "file_id",
+                "version",
+                "bindings",
+            ]
+        }
         for step in initial["steps"]
     ]
     schema_check(api.put(task_url, json=payload), "Task")
@@ -948,7 +1015,7 @@ def test_create_task_with_unsaved_response_source(api, server):
                 "rest_source": {"step_index": 0, "extract_expression": "data.a"},
             }
         ],
-        "steps": [copy.deepcopy(steps["/init"])],
+        "steps": task_steps([copy.deepcopy(steps["/init"])]),
     }
     created = schema_check(api.post(p + "/tasks", json=payload), "Task", 201)
     source = created["global_parameters"][0]["rest_source"]
@@ -961,6 +1028,7 @@ def test_create_task_with_unsaved_response_source(api, server):
 
     payload["name"] = created["name"]
     payload["steps"].insert(0, copy.deepcopy(steps["/init"]))
+    payload["steps"] = task_steps(payload["steps"])
     payload["steps"][1]["id"] = created["steps"][0]["id"]
     updated = schema_check(api.put(t, json=payload), "Task")
     assert updated["global_parameters"][0]["rest_source"]["step_id"] == updated["steps"][0]["id"]
@@ -995,7 +1063,7 @@ def test_task_source_write_contract(source, valid):
     payload = {
         "name": "new",
         "base_url": "http://localhost",
-        "steps": [],
+        "steps": task_steps([]),
         "global_parameters": [
             {
                 "name": "value",
@@ -1013,7 +1081,7 @@ def test_assertion_save_copy_clear_and_snapshot(api, server, database):
     t, created = create(["/init", "/ok"])
     first, second = created["steps"]
     code = (
-        "def assert_response(responseBody, globalParam):\n"
+        "def assert_response(responseBody, globalParam, statusCode, headers):\n"
         '    return responseBody["data"]["a"] > globalParam["T1"]\n'
     )
     payload = {
@@ -1027,10 +1095,12 @@ def test_assertion_save_copy_clear_and_snapshot(api, server, database):
                 "rest_source": {"step_id": first["id"], "extract_expression": "data.a"},
             }
         ],
-        "steps": [
-            dict(steps["/init"], id=first["id"], assertion_code=None),
-            dict(steps["/ok"], id=second["id"], assertion_code=code),
-        ],
+        "steps": task_steps(
+            [
+                dict(steps["/init"], id=first["id"], assertion_code=None),
+                dict(steps["/ok"], id=second["id"], assertion_code=code),
+            ]
+        ),
     }
     updated = schema_check(api.put(t, json=payload), "Task")
     assert [s["assertion_code"] for s in updated["steps"]] == [None, code]
@@ -1074,7 +1144,7 @@ def test_assertion_save_copy_clear_and_snapshot(api, server, database):
         ("/ok", "return False", "ASSERTION_FAILED"),
         ("/ok", "return 1", "ASSERTION_RETURN_TYPE_ERROR"),
         ("/ok", 'raise ValueError("PRIVATE_ASSERTION_SECRET")', "ASSERTION_EXECUTION_ERROR"),
-        ("/not-json", "return True", "RESPONSE_NOT_JSON"),
+        ("/not-json", "return True", None),
         ("/init", 'return "T1" in globalParam', "ASSERTION_FAILED"),
     ],
 )
@@ -1095,18 +1165,25 @@ def test_assertion_run_verdict_and_extraction_order(api, server, path, statement
                 },
             }
         ],
-        "steps": [
-            dict(
-                steps[path],
-                id=created["steps"][0]["id"],
-                assertion_code=(
-                    "def assert_response(responseBody, globalParam):\n    " + statement
+        "steps": task_steps(
+            [
+                dict(
+                    steps[path],
+                    id=created["steps"][0]["id"],
+                    assertion_code=(
+                        "def assert_response(responseBody, globalParam, statusCode, headers):\n    " + statement
+                    ),
                 ),
-            ),
-            dict(steps["/ok"], id=created["steps"][1]["id"]),
-        ],
+                dict(steps["/ok"], id=created["steps"][1]["id"]),
+            ]
+        ),
     }
     assert api.put(t, json=payload).status_code == 200
+    if "in globalParam" in statement:
+        rejected = api.post(t + "/runs")
+        assert rejected.status_code == 400 and rejected.json()["code"] == "PARAMETER_NOT_AVAILABLE"
+        assert server["calls"] == []
+        return
     rid = api.post(t + "/runs").json()["id"]
     result = wait_run(api, t, rid)
     assert result["run"]["error_code"] == error
@@ -1116,7 +1193,8 @@ def test_assertion_run_verdict_and_extraction_order(api, server, path, statement
     requests = schema_check(api.get(t + f"/runs/{rid}/requests"), "RequestPage")["items"]
     assert requests[0]["error_code"] == error
     assert len(server["calls"]) == (1 if error else 2)
-    assert result["global_parameters"][0]["status"] == ("skipped" if error else "succeeded")
+    assert result["global_parameters"][0]["status"] == "succeeded"
+    assert result["global_parameters"][0]["published"]
     assert "PRIVATE_ASSERTION_SECRET" not in json.dumps(result["run"])
     assert "PRIVATE_ASSERTION_SECRET" not in json.dumps(requests)
 
@@ -1127,7 +1205,7 @@ def test_assertion_preview_and_extraction_failure(api, server):
     step = dict(
         steps["/fail"],
         id=created["steps"][0]["id"],
-        assertion_code=("def assert_response(responseBody, globalParam):\n    return True"),
+        assertion_code=("def assert_response(responseBody, globalParam, statusCode, headers):\n    return True"),
     )
     parameter = {
         "name": "T1",
@@ -1139,7 +1217,7 @@ def test_assertion_preview_and_extraction_failure(api, server):
         "name": created["name"],
         "base_url": server["url"],
         "global_parameters": [parameter],
-        "steps": [step],
+        "steps": task_steps([step]),
     }
     assert api.put(t, json=payload).status_code == 200
     preview = {k: v for k, v in payload.items() if k != "name"}
@@ -1150,17 +1228,21 @@ def test_assertion_preview_and_extraction_failure(api, server):
         ]
         == 1
     )
-    step["assertion_code"] = "def assert_response(responseBody, globalParam):\n    return False"
-    rejected = schema_check(api.post(t + "/parameters/preview", json=preview), "Error", 422)
-    assert rejected["code"] == "ASSERTION_FAILED"
-    step["assertion_code"] = "def assert_response(responseBody, globalParam):\n    return True"
+    preview["steps"][0]["assertion_code"] = (
+        "def assert_response(responseBody, globalParam, statusCode, headers):\n    return False"
+    )
+    assert schema_check(api.post(t + "/parameters/preview", json=preview), "PreviewParameterResult")["value"] == 2
+    preview["steps"][0]["assertion_code"] = (
+        "def assert_response(responseBody, globalParam, statusCode, headers):\n    return True"
+    )
     parameter["rest_source"]["extract_expression"] = "data.missing"
     assert api.put(t, json=payload).status_code == 200
     rid = api.post(t + "/runs").json()["id"]
     result = wait_run(api, t, rid)
-    assert result["run"]["error_code"] == "EXTRACTION_NOT_FOUND"
-    assert result["steps"][0]["status"] == "failed"
-    assert result["global_parameters"][0]["status"] == "failed"
+    assert result["run"]["status"] == "succeeded"
+    assert result["steps"][0]["status"] == "succeeded"
+    assert result["global_parameters"][0]["status"] == "succeeded"
+    assert result["global_parameters"][0]["value"] is None
     assert len(server["calls"]) == 3
 
 
@@ -1176,10 +1258,53 @@ def test_xml_task_import_atomic(api, server):
             files={"file": ("task.xml", content, "application/xml")},
         )
 
-    created = schema_check(upload(xml), "Task", 201)
+    created = schema_check_list(upload(xml), "Task", 201)[0]
     assert [s["path"] for s in created["steps"]] == ["/init", "/ok"]
     assert created["global_parameters"][0]["rest_source"]["step_id"] == created["steps"][0]["id"]
     assert upload(xml).status_code == 409
     invalid_xml = xml.replace(b"xml-task", b"bad-task").replace(b"/ok", b"/unknown")
     assert upload(invalid_xml).status_code == 400
     assert api.get(p + "/tasks", params={"name": "bad-task"}).json()["total"] == 0
+
+
+def test_xml_task_import_multiple_files_atomic(api, server):
+    p, _, _, _ = asset(api, server)
+    endpoint = p + "/tasks/import"
+
+    def upload(files, data=None):
+        return api.post(
+            endpoint,
+            data=data or {"base_url": server["url"]},
+            files=[("file", (name, content, "application/xml")) for name, content in files],
+        )
+
+    first = b"""<task name="multi-a"><taskStep order="1"><rest method="GET" path="/init"/></taskStep></task>"""
+    second = b"""<task name="multi-b"><taskStep order="1"><rest method="GET" path="/ok"/></taskStep></task>"""
+    created = schema_check_list(upload([("a.xml", first), ("b.xml", second)]), "Task", 201)
+    assert [t["name"] for t in created] == ["multi-a", "multi-b"]
+    assert api.get(p + "/tasks", params={"name": "multi-"}).json()["total"] == 2
+    # 任一文件失败则整批回滚，错误定位到具体文件
+    broken = second.replace(b"multi-b", b"multi-c").replace(b"/ok", b"/unknown")
+    response = upload([("good.xml", first.replace(b"multi-a", b"multi-d")), ("c.xml", broken)])
+    assert response.status_code == 400
+    assert any(
+        issue["location"].startswith("body.file.1 (c.xml)") for issue in response.json()["issues"]
+    )
+    for name in ("multi-c", "multi-d"):
+        assert api.get(p + "/tasks", params={"name": name}).json()["total"] == 0
+    # 批内任务重名同样整体回滚
+    response = upload(
+        [("e.xml", first.replace(b"multi-a", b"multi-e")), ("f.xml", first.replace(b"multi-a", b"multi-e"))]
+    )
+    assert response.status_code == 409
+    assert any(
+        issue["location"].startswith("body.file.1 (f.xml)") for issue in response.json()["issues"]
+    )
+    assert api.get(p + "/tasks", params={"name": "multi-e"}).json()["total"] == 0
+    # base_url 等字段仍不得重复
+    response = upload(
+        [("a.xml", first)],
+        data=[("base_url", server["url"]), ("base_url", "http://dup.example.com")],
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_REQUEST"

@@ -17,7 +17,7 @@
 - 支持 path、query、header 参数及 application/json、multipart/form-data 请求体，保留类型、必填、默认值、示例和字段结构。
 - multipart 请求体保留普通字段、必填列表、文件字段的 `type: string` / `format: binary` 及 encoding 定义；当前每个请求体仅支持一种媒体类型，不支持的多媒体类型定义需拒绝导入。
 - Schema 支持 string、integer、number、boolean、array、object 和嵌套结构；支持文件内 `#/components/...` 引用。
-- 暂不支持外部引用、组合 Schema（oneOf、anyOf、allOf）、cookie 参数及 JSON/multipart 以外的请求体。不支持的结构需定位并拒绝导入，不得静默丢弃。
+- 组合 Schema（oneOf、anyOf、allOf、not）原样保留，执行时按对应 JSON Schema 版本校验；暂不支持外部引用、cookie 参数及 JSON/multipart 以外的请求体。不支持的结构需定位并拒绝导入，不得静默丢弃。
 - 空文件、无接口、非法 YAML、非法 OpenAPI、引用无法解析或超限均拒绝导入。认证定义仅供浏览，不自动生成认证请求头。
 - `servers` 可展示，执行地址由阶段二任务明确配置。
 

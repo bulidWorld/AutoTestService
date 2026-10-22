@@ -84,7 +84,7 @@ class Projects:
             tasks = self.db.execute(
                 "SELECT DISTINCT t.id FROM tasks t "
                 + (
-                    "JOIN task_steps s ON s.task_id=t.id WHERE s.file_id=%s"
+                    "JOIN task_steps s ON s.task_id=t.id WHERE s.step_type='rest' AND s.file_id=%s"
                     if fid
                     else "WHERE t.project_id=%s"
                 ),
@@ -118,7 +118,7 @@ class Projects:
 
     def delete_files(self, ids):
         if self.one("SELECT to_regclass('task_steps') AS table_name")["table_name"] and self.one(
-            "SELECT id FROM task_steps WHERE file_id=ANY(%s) LIMIT 1", (ids,)
+            "SELECT id FROM task_steps WHERE step_type='rest' AND file_id=ANY(%s) LIMIT 1", (ids,)
         ):
             raise BusinessError(409, "FILE_REFERENCED", "文件被任务步骤引用，不能删除")
         for table in ("api_interfaces", "yaml_versions", "yaml_files"):

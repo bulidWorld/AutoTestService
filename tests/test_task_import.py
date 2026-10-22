@@ -55,7 +55,7 @@ def lookup(method, path):
 def test_sorted_steps_extraction_and_typed_binding():
     root = parse("""<task name="test">
       <parameters><parameter type="fixed" valueType="boolean"><name>flag</name><value>true</value></parameter></parameters>
-      <taskStep order="20"><rest method="GET" path="/orders/{id}"><body><kv><parameter>id</parameter></kv></body></rest></taskStep>
+      <taskStep order="20"><rest method="GET" path="/orders/{id}"><pathParams><kv><parameter>id</parameter></kv></pathParams></rest></taskStep>
       <taskStep order="10"><rest method="GET" path="/init"><extractParam valueType="integer"><name>id</name><value>data[0].id</value></extractParam></rest></taskStep>
     </task>""")
     config = convert(root, "http://localhost", lookup)
@@ -72,6 +72,8 @@ def test_sorted_steps_extraction_and_typed_binding():
     validate_config(config)
     reversed_config = copy.deepcopy(config)
     reversed_config["steps"].reverse()
+    validate_config(reversed_config)
+    reversed_config["steps"][0]["position"] = 1
     with pytest.raises(BusinessError):
         validate_config(reversed_config)
 
@@ -83,3 +85,25 @@ def test_wrong_typed_values(kind, value):
     )
     with pytest.raises(BusinessError):
         convert(root, "http://localhost", lookup)
+
+
+def test_http_assertion_imported_for_main_parallel_and_cleanup():
+    code = (
+        "def assert_response(responseBody, globalParam, statusCode, headers):\n"
+        "    return statusCode == 401 and headers.get('www-authenticate') == ['Bearer']"
+    )
+    rest = (
+        f'<rest method="GET" path="/init"><assertionCode><![CDATA[{code}]]></assertionCode></rest>'
+    )
+    root = parse(f"""<task name="HTTP assertions">
+      <taskStep order="10">{rest}</taskStep>
+      <taskStep order="20"><parallel>
+        <taskStep order="1">{rest}</taskStep>
+        <taskStep order="2"><wait milliseconds="1"/></taskStep>
+      </parallel></taskStep>
+      <finally><taskStep order="10">{rest}</taskStep></finally>
+    </task>""")
+    config = convert(root, "http://localhost", lookup)
+    rest_steps = [step for step in config["steps"] if step["step_type"] == "rest"]
+    assert len(rest_steps) == 3
+    assert all(step["assertion_code"] == code for step in rest_steps)

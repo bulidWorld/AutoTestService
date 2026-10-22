@@ -32,7 +32,20 @@ def execute_once(interface, document, inputs, project_id):
                 "binding": {"kind": "literal", "value": inputs["request_body"]},
             }
         )
-    step = {"id": interface["id"], "interface": interface, "document": document, "bindings": fields}
+    step = {
+        "id": interface["id"],
+        "interface": interface,
+        "document": document,
+        "bindings": [f for f in fields if f["location"] != "header"],
+        "headers": [
+            {"name": f["name"], "binding": f["binding"]}
+            for f in fields
+            if f["location"] == "header"
+        ],
+        "step_type": "rest",
+        "execution_scope": "main",
+        "position": 1,
+    }
     config = {"base_url": inputs["base_url"], "global_parameters": [], "steps": [step]}
     validate_config(config, run=True)
     request = build_request(config, step, values={})
@@ -44,6 +57,7 @@ def execute_once(interface, document, inputs, project_id):
         secrets.extend(secret_strings(inputs["request_body"]))
     started_at = datetime.now(UTC)
     response = request_http(request, inputs.get("timeout_seconds", 30))
+    request["duration_ms"] = int(request["duration_ms"])
     result = {
         "project_id": project_id,
         "file_id": interface["file_id"],

@@ -81,33 +81,61 @@ def bind(operation, specification, handler, database_free=False):
                         body["name"] = body["name"].strip()
                     validate_value(body, schema, specification, "body")
                 else:
+                    from app.service.task_import import MAX_TASK_FILES
+
+                    multiple = operation["operationId"] == "importTask"
                     # Bound total request bytes before multipart parsing to avoid unbounded uploads.
+                    limit = MAX_BYTES * (MAX_TASK_FILES if multiple else 1)
                     buffer = bytearray()
                     async for chunk in request.stream():
                         buffer.extend(chunk)
-                        if len(buffer) > MAX_BYTES + 65536:
+                        if len(buffer) > limit + 65536:
                             raise BusinessError(
                                 413, "FILE_TOO_LARGE", "文件不得超过 5 MiB", "body.file"
                             )
                     request._body = bytes(buffer)
                     async with request.form(
-                        max_files=1, max_fields=2, max_part_size=MAX_BYTES
+                        max_files=MAX_TASK_FILES if multiple else 1,
+                        max_fields=2,
+                        max_part_size=MAX_BYTES,
                     ) as form:
-                        if len(form.multi_items()) != len(form):
+                        if any(
+                            len(form.getlist(key)) > 1
+                            for key in form.keys()
+                            if key != "file" or not multiple
+                        ):
                             invalid("上传字段不得重复", "body")
                         file = form.get("file")
                         if not isinstance(file, UploadFile):
                             invalid("必须上传文件", "body.file")
-                        body = {k: v.strip() if isinstance(v, str) else "" for k, v in form.items()}
+                        body = {}
+                        for key, value in form.items():
+                            if key == "file" and multiple:
+                                body.setdefault("file", []).append("")
+                            else:
+                                body[key] = value.strip() if isinstance(value, str) else ""
                         validate_value(body, schema, specification, "body")
-                        parser = parse_upload
-                        if operation["operationId"] == "importTask":
-                            from app.service.task_import import parse_upload as parse_task_upload
+                        if not multiple:
+                            upload = await run_in_threadpool(
+                                parse_upload, file.filename, await file.read(MAX_BYTES + 1)
+                            )
+                        else:
+                            from app.service.task_import import (
+                                file_issue,
+                                parse_upload as parse_task_upload,
+                            )
 
-                            parser = parse_task_upload
-                        upload = await run_in_threadpool(
-                            parser, file.filename, await file.read(MAX_BYTES + 1)
-                        )
+                            upload = []
+                            for index, item in enumerate(form.getlist("file")):
+                                try:
+                                    root = await run_in_threadpool(
+                                        parse_task_upload,
+                                        item.filename,
+                                        await item.read(MAX_BYTES + 1),
+                                    )
+                                except BusinessError as exc:
+                                    raise file_issue(index, item.filename, exc) from None
+                                upload.append((item.filename, root))
             if database_free:
                 result = await run_in_threadpool(handler, None, path, query, body, upload)
             else:

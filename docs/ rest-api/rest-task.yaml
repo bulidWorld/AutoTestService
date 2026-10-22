@@ -3,8 +3,8 @@ openapi: 3.0.3
 info:
   title: AutoTestService Task API
   version: 0.4.0
-  description: 阶段二任务编排与基础执行契约；依赖 rest-project.yaml 的项目及接口资产。字段取值、关联、唯一性及状态约束由业务校验。保存和运行前进行校验；仅支持全局
-    REST 参数响应提取，无步骤响应提取、实时推送、重试或并行步骤。敏感数据在页面、API 及日志脱敏。
+  description: 统一任务节点配置与执行查询契约；支持 REST、固定等待、单层并发屏障与任务级 finally。直接采用新模型，不兼容旧步骤或 location=header 绑定。配置保存和启动前静态校验，执行中的业务失败通过运行查询返回。raw_body
+                 原文不脱敏，其余敏感值沿用既有脱敏规则。
 paths:
   /api/v1/projects/{project_id}/tasks:
     get:
@@ -60,7 +60,7 @@ paths:
       tags:
       - 任务管理
       summary: 创建任务
-      description: 原子保存参数和有序步骤；草稿允许没有步骤。 当前阶段无需认证。
+      description: 原子保存参数与执行树；草稿允许无步骤。steps 数组仅定义临时下标，调度按 position 与父子关系。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
       responses:
@@ -96,8 +96,10 @@ paths:
                 $ref: '#/components/schemas/Error'
       requestBody:
         required: true
-        description: 完整保存任务配置，步骤与参数原子替换；草稿可无步骤。保存校验必填、类型、引用及本项目版本归属；步骤数组顺序用于排序，复制省略
-          id。接口默认值仅首次填入，可修改。
+        description: 原子保存完整执行树及参数。steps 数组仅定义临时 step_index，不决定调度顺序；先建立全部节点 ID，再映射 parent_step_index 与 rest_source.step_index。读取仅返回稳定
+                       parent_step_id，根为 null。固定值先初始化，main 按树及 position 执行；parallel 子节点读取同一输入快照，不能互相依赖，已启动子节点收尾后一次发布赋值（含 null），失败不阻止发布。参数名唯一，来源允许 main/finally REST 或 compute
+                       叶子。草稿可声明需要严格前序任务组批次继承的输入；启动须证明输入可用。bindings、headers 和断言均纳入依赖分析；finally 仅校验声明、类型与来源，运行时缺失输入则失败并继续后续清理。保存禁止修改 queued/running
+                       或活动组预约任务。
         content:
           application/json:
             schema:
@@ -107,12 +109,15 @@ paths:
       operationId: importTask
       tags: [任务管理]
       summary: 导入 XML 任务
-      description: 按 docs/task.xsd 校验 XML；按 method/path 精确匹配本项目各文件当前版本的唯一接口。按 order 排序，复用任务保存校验，原子创建，不执行请求。未知接口或匹配歧义返回 400，同名任务返回 409。当前阶段无需认证。
+      description: 单文件 XML 上限 5 MiB，一次最多上传 20 个文件，禁止 DTD/实体/外部引用；按新 XSD 接收 rest/wait/compute/parallel 与 finally。main 前序展开后再展开
+        finally，order 原值保存为 position；独立 pathParams/queryParams/body 转为对应 bindings，header 转为 headers，拒绝 kv location 及旧 header 绑定。rawBody 存在即启用且保留
+        解析后原文。按同项目当前版本 method/path 唯一匹配接口，固定版本；保存复用树形校验，不发 HTTP。整批原子导入：任一文件失败则全部回滚。格式/结构/依赖错误 400 并返回
+        具体文件序号、XPath/行号与原因，缺项目 404，任一文件同名 409，超限 413，成功 201 按上传顺序返回任务数组。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
       requestBody:
         required: true
-        description: 上传不超过 5 MiB 的 XML 文件，并指定任务运行地址。
+        description: 上传 1-20 个各不超过 5 MiB 的 XML 文件，并指定任务运行地址。
         content:
           multipart/form-data:
             schema:
@@ -121,25 +126,31 @@ paths:
               required: [file, base_url]
               properties:
                 file:
-                  type: string
-                  format: binary
-                  description: 符合 docs/task.xsd 的 .xml 文件，禁止 DTD 和实体。
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items:
+                    type: string
+                    format: binary
+                  description: 符合 docs/task.xsd 的 .xml 文件，可一次上传多个，禁止 DTD 和实体。
                 base_url:
                   type: string
                   minLength: 1
                   maxLength: 2048
                   description: 无凭据、query 或 fragment 的 HTTP/HTTPS 运行地址。
                   example: https://api.example.com
-              example: {file: task.xml, base_url: 'https://api.example.com'}
+              example: {file: [task.xml, task2.xml], base_url: 'https://api.example.com'}
       responses:
         '201':
-          description: 原子创建成功，返回脱敏任务详情。
+          description: 整批原子创建成功，按上传顺序返回脱敏任务详情数组。
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Task'
+                type: array
+                items:
+                  $ref: '#/components/schemas/Task'
         '400':
-          description: XML、接口匹配或任务配置无效。
+          description: 某个 XML 文件、接口匹配或任务配置无效，整批回滚。
           content:
             application/json:
               schema:
@@ -151,13 +162,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '409':
-          description: 任务名称冲突。
+          description: 任务名称冲突，整批回滚。
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '413':
-          description: 文件超过 5 MiB。
+          description: 某个文件超过 5 MiB。
           content:
             application/json:
               schema:
@@ -214,8 +225,7 @@ paths:
       tags:
       - 任务管理
       summary: 保存任务及步骤排序
-      description: 完整替换参数和步骤；保留已有步骤 ID，新步骤分配 ID。同一接口可重复添加。显式重新选择版本后校验绑定。锁定任务行协调保存和启动；单任务运行中允许编辑，历史快照不受影响；被活动任务组预约时禁止编辑，返回 409。
-        当前阶段无需认证。
+      description: 完整替换配置，保留已有节点 ID、新节点分配 ID。按项目 → 任务组 → 任务锁序，queued/running（含清理）或活动组预约时禁止修改，返回 409。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
       - $ref: '#/components/parameters/TaskId'
@@ -252,8 +262,10 @@ paths:
                 $ref: '#/components/schemas/Error'
       requestBody:
         required: true
-        description: 完整保存任务配置，步骤与参数原子替换；草稿可无步骤。保存校验必填、类型、引用及本项目版本归属；步骤数组顺序用于排序，复制省略
-          id。接口默认值仅首次填入，可修改。
+        description: 原子保存完整执行树及参数。steps 数组仅定义临时 step_index，不决定调度顺序；先建立全部节点 ID，再映射 parent_step_index 与 rest_source.step_index。读取仅返回稳定
+                       parent_step_id，根为 null。固定值先初始化，main 按树及 position 执行；parallel 子节点读取同一输入快照，不能互相依赖，已启动子节点收尾后一次发布赋值（含 null），失败不阻止发布。参数名唯一，来源允许 main/finally REST 或 compute
+                       叶子。草稿可声明需要严格前序任务组批次继承的输入；启动须证明输入可用。bindings、headers 和断言均纳入依赖分析；finally 仅校验声明、类型与来源，运行时缺失输入则失败并继续后续清理。保存禁止修改 queued/running
+                       或活动组预约任务。
         content:
           application/json:
             schema:
@@ -306,7 +318,7 @@ paths:
       tags:
       - 任务管理
       summary: 复制任务
-      description: 复制到同一项目，新任务及全部步骤分配新 ID；同步重映射 REST 参数的 step_id。复制来源配置和版本绑定，不复制运行历史、预览值或运行结果。当前阶段无需认证。
+      description: 复制到同一项目，重建全部任务、节点 ID，同时重映射 parent_step_id 与 rest_source.step_id；保留 headers、raw_body、等待、并发、清理及版本绑定，不复制运行历史或预览值。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
       - $ref: '#/components/parameters/TaskId'
@@ -343,7 +355,7 @@ paths:
                 $ref: '#/components/schemas/Error'
       requestBody:
         required: true
-        description: 复制到同一项目；名称必填且唯一，参数和版本绑定复制，任务及步骤分配新 ID，不复制运行历史。
+        description: 复制到同一项目，重建全部任务、节点 ID，同时重映射 parent_step_id 与 rest_source.step_id；保留 headers、raw_body、等待、并发、清理及版本绑定，不复制运行历史或预览值。
         content:
           application/json:
             schema:
@@ -395,8 +407,8 @@ paths:
       tags:
       - 任务管理
       summary: 校验任务
-      description: 只做静态校验，不调用接口：校验必填、类型、版本归属及 REST step_id 归属，禁止不存在或移除的步骤；save 模式允许已声明 REST 参数作为待继承的组输入，run 模式拒绝本任务内未就绪依赖和循环。错误返回
-        valid=false 与 issues。run 模式至少一个步骤。当前阶段无需认证。
+      description: 仅静态校验统一执行树；save 允许待继承任务组输入，run 必须证明本任务输入已发布可用。并发子节点从同一输入集合分析，禁止兄弟互相依赖；headers、bindings、断言均参与校验。finally 仅校验参数声明、类型及来源合法性。错误
+        400 并定位 steps 字段，不发 HTTP。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
       - $ref: '#/components/parameters/TaskId'
@@ -444,12 +456,8 @@ paths:
       tags:
       - 任务运行
       summary: 运行任务
-      description: 先静态校验配置、step_id 本任务归属、参数依赖及提取表达式；失败 400，不发请求。锁定任务行，queued/running
-        存在则 409；事务保存不可变配置快照、运行步骤及参数结果，返回 202。先初始化 fixed 参数，再按步骤序号发送请求；每步完成后执行绑定表达式并赋值全局参数，后续步骤只能引用已赋值的参数。同一步骤只请求一次，多个参数共享响应。
-        无并行、重试或自动重定向。每步发送前提交请求记录，发送后保存响应；未设置 assertion_code 时按 HTTP 2xx 判断，设置时在当前步骤参数提取前调用业务断言，以 boolean 返回值替代状态码判定。
-        未设置断言时的 HTTP 错误、断言失败或执行异常或非布尔返回值、连接失败、超时、断言或参数提取所需响应非 JSON、字段缺失、null 或提取类型错误导致运行失败，未执行参数及步骤跳过；断言或提取失败同时将源运行步骤标记
-        failed。不同任务独立运行，关闭页面不终止执行。重启将未结束运行和正在执行的参数/步骤标记 EXECUTION_INTERRUPTED，未执行项跳过，不续跑。地址前缀正确拼接，path/query
-        编码，query 数组重复键，对象 query 拒绝，JSON 保留结构。当前阶段无需认证。
+      description: 树形静态校验失败返回 400，不创建运行、不执行清理。事务创建不可变快照、全部运行节点和参数结果，第二遍映射运行父 ID。接受返回 202，执行业务失败由运行查询返回。服务最多八个活动任务，全部独立任务、组成员、并发及清理共享八个
+        HTTP 槽位；单请求 timeout 不限制 wait/parallel。主流程失败等待已启动并发子节点收尾，再尝试全部 finally；清理期间保持 running、运行互斥与任务组预约。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
       - $ref: '#/components/parameters/TaskId'
@@ -507,6 +515,7 @@ paths:
           - running
           - succeeded
           - failed
+          - blocked
       responses:
         '200':
           description: 操作成功。
@@ -544,7 +553,8 @@ paths:
       tags:
       - 任务运行
       summary: 运行详情
-      description: 返回脱敏的不可变快照和步骤状态，支持手动刷新。 当前阶段无需认证。
+      description: 返回执行阶段、primary_error、cleanup_status、不可变配置树及可见运行节点。parallel 仅返回父状态、整体耗时、错误摘要与 parallel_stats，不展开子节点运行结果或响应详情；按 scope、前序、兄弟
+        position/id 排序。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
       - $ref: '#/components/parameters/TaskId'
@@ -586,8 +596,7 @@ paths:
       tags:
       - 任务运行
       summary: 运行请求记录
-      description: 先按阶段(parameters、steps)，再按 position、id 升序分页；执行前已经持久化的请求可查询，尚无响应的字段为
-        null。跳过步骤无请求记录。 当前阶段无需认证。
+      description: 仅列出 parallel 外的 REST（含清理），按 phase(parameters、steps、finally)、position、id 稳定分页。parallel 内无请求详情，其数量仅计入父节点统计，因此列表总数可小于运行请求总数。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
       - $ref: '#/components/parameters/TaskId'
@@ -631,7 +640,7 @@ paths:
       tags:
       - 任务运行
       summary: 请求详情
-      description: 返回方法、实际 URL、请求与响应头体、状态码、时间、耗时及可区分的错误原因，全部经过脱敏。 当前阶段无需认证。
+      description: 查询 parallel 外 REST 的实际请求与响应详情；raw_body 的实际发送文本原文返回、不脱敏，其余敏感字段脱敏。parallel 子请求不创建记录、不提供详情。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
       - $ref: '#/components/parameters/TaskId'
@@ -701,14 +710,14 @@ components:
           reason: 暂不支持 text/plain 请求体
     ValidationIssue:
       type: object
-      description: 单项校验错误，定位 YAML 字段、接口路径或请求参数。
+      description: 单项校验问题，API 定位 steps 数组字段，XML 定位具体 XPath/行号及原因。
       example:
         location: /paths/~1orders/post/requestBody
         reason: 暂不支持 text/plain 请求体
       properties:
         location:
           type: string
-          description: 出错位置；YAML 使用 JSON Pointer，请求使用 body.name 等字段路径。
+          description: API 如 steps[2].parent_step_index；XML 如 /task/taskStep[@order="30"]/parallel/taskStep[@order="2"]/rest/rawBody，可包含行号。
           example: /paths/~1orders/post/requestBody
         reason:
           type: string
@@ -717,168 +726,450 @@ components:
       required:
       - location
       - reason
+    ComputeStepInput:
+      type: object
+      description: 运行时受限表达式节点，不发 HTTP；实际执行时捕获一个 now，所有表达式共享时刻与节点前参数快照，全部计算成功才发布。支持 main、finally 及 parallel 子节点。
+      properties:
+        options:
+          allOf:
+          - $ref: '#/components/schemas/ExecutionOptions'
+          - required:
+            - expressions
+        id:
+          type: integer
+          description: 已有步骤稳定 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        step_type:
+          type: string
+          description: 节点类型。
+          example: compute
+          enum:
+          - compute
+        execution_scope:
+          type: string
+          description: 主流程或清理流程；compute 可作为 main parallel 的叶子。
+          example: main
+          enum:
+          - main
+          - finally
+        position:
+          type: integer
+          description: 兄弟排序值；不由 steps 数组顺序推导。
+          example: 10
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        parent_step_id:
+          type: integer
+          description: 稳定 parallel 父节点 ID；根节点读取为 null，写入时省略。
+          example: null
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+        parent_step_index:
+          type: integer
+          description: 本次完整 steps 数组的父下标，从 0 开始；与 parent_step_id 二选一，仅写入支持。
+          example: 0
+          minimum: 0
+          maximum: 999
+      required:
+      - step_type
+      - execution_scope
+      - position
+      - options
+      additionalProperties: false
+      example:
+        step_type: compute
+        execution_scope: main
+        position: 10
+        options:
+          timezone: Asia/Shanghai
+          expressions:
+          - name: EXPIRES
+            expression: http_date(add_seconds(now(), 3600))
+    ComputeStep:
+      type: object
+      description: 运行时受限表达式节点，不发 HTTP；实际执行时捕获一个 now，所有表达式共享时刻与节点前参数快照，全部计算成功才发布。支持 main、finally 及 parallel 子节点。
+      properties:
+        options:
+          allOf:
+          - $ref: '#/components/schemas/ExecutionOptions'
+          - required:
+            - expressions
+        id:
+          type: integer
+          description: 已有步骤稳定 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        step_type:
+          type: string
+          description: 节点类型。
+          example: compute
+          enum:
+          - compute
+        execution_scope:
+          type: string
+          description: 主流程或清理流程；compute 可作为 main parallel 的叶子。
+          example: main
+          enum:
+          - main
+          - finally
+        position:
+          type: integer
+          description: 兄弟排序值；不由 steps 数组顺序推导。
+          example: 10
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        parent_step_id:
+          type: integer
+          description: 稳定 parallel 父节点 ID；根节点读取为 null，写入时省略。
+          example: null
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+      required:
+      - step_type
+      - execution_scope
+      - position
+      - id
+      - parent_step_id
+      - options
+      additionalProperties: false
+      example:
+        step_type: compute
+        execution_scope: main
+        position: 10
+        id: 1
+        parent_step_id: null
+        options:
+          timezone: Asia/Shanghai
+          expressions:
+          - name: EXPIRES
+            expression: http_date(add_seconds(now(), 3600))
+    ComputeRunStep:
+      type: object
+      description: compute 运行结果；不创建 HTTP 请求，表达式失败为 EXPRESSION_EVALUATION_ERROR，参数全部成功才原子发布。
+      properties:
+        runId:
+          type: string
+          format: uuid
+          description: 本次步骤运行的全局唯一标识，与日志 runId 一致；不同于任务级 run_id。
+        id:
+          type: integer
+          description: 运行步骤 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        step_id:
+          type: integer
+          description: 快照中的任务步骤稳定 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        position:
+          type: integer
+          description: 同一 scope、同一父节点内的兄弟排序值。
+          example: 10
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        status:
+          type: string
+          description: 步骤状态
+          example: pending
+          enum:
+          - pending
+          - running
+          - succeeded
+          - failed
+          - skipped
+          - blocked
+        request_id:
+          type: integer
+          description: wait/parallel 不创建请求记录，恒为 null。
+          example: null
+          format: int32
+          nullable: true
+          minimum: 1
+          enum:
+          - null
+        started_at:
+          type: string
+          description: 开始时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          description: 结束时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        duration_ms:
+          type: integer
+          description: 耗时毫秒，未结束为 null
+          example: null
+          format: int64
+          nullable: true
+          minimum: 0
+        error_code:
+          type: string
+          description: 错误分类；断言返回 False 为 ASSERTION_FAILED，执行异常为 ASSERTION_EXECUTION_ERROR，非布尔返回值为 ASSERTION_RETURN_TYPE_ERROR；服务重启遗留运行标记
+            EXECUTION_INTERRUPTED
+          example: null
+          nullable: true
+        error_message:
+          type: string
+          description: 脱敏错误说明
+          example: null
+          nullable: true
+        step_type:
+          type: string
+          description: 运行节点类型。
+          example: compute
+          enum:
+          - compute
+        execution_scope:
+          type: string
+          description: 运行节点所属流程。
+          example: main
+          enum:
+          - main
+          - finally
+        parent_run_step_id:
+          type: integer
+          description: 运行父节点 ID；查询仅返回根节点，因此为 null；完整层级由快照恢复。
+          example: null
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+      required:
+      - id
+      - step_id
+      - position
+      - status
+      - request_id
+      - started_at
+      - finished_at
+      - duration_ms
+      - error_code
+      - error_message
+      - step_type
+      - execution_scope
+      - parent_run_step_id
+      example:
+        id: 1
+        step_id: 1
+        position: 10
+        status: pending
+        request_id: null
+        started_at: '2026-10-13T07:00:00Z'
+        finished_at: '2026-10-13T07:00:00Z'
+        duration_ms: null
+        error_code: null
+        error_message: null
+        step_type: compute
+        execution_scope: main
+        parent_run_step_id: null
+      additionalProperties: false
+    ExecutionOptions:
+      type: object
+      description: 显式节点执行策略；对应 XML 的 auth、taskStep 条件属性、updateParam、wait 动态属性及 rawPath/rawQuery。未知键拒绝。
+      additionalProperties: false
+      properties:
+        timezone:
+          type: string
+          minLength: 1
+          default: Asia/Shanghai
+          description: compute 专用 IANA 时区；不使用宿主机时区。now/today 使用该时区，HTTP-date 固定输出 GMT。
+        expressions:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: compute 专用，名称须对应 expression_source 为本节点的参数。只允许白名单函数和有界数值四则运算；param 只接受字面参数名，同节点输出不可互引。
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              name:
+                type: string
+                minLength: 1
+              expression:
+                type: string
+                minLength: 1
+                maxLength: 2000
+            required:
+            - name
+            - expression
+        auth:
+          type: object
+          description: 逐步鉴权；none 不带 Authorization；bearer 生成 Bearer 前缀头，二者与显式 Authorization 互斥。header 模式要求恰好一个显式 Authorization，仅豁免该头的接口 Schema，覆盖伪造、空值或错误格式鉴权；仍禁止换行。
+          additionalProperties: false
+          properties:
+            mode:
+              type: string
+              enum:
+              - none
+              - bearer
+              - header
+            parameter:
+              type: string
+              minLength: 1
+          required:
+          - mode
+        condition:
+          type: object
+          description: 条件不满足时默认 skip；blocked 表示前提不足，停止主流程并执行 finally。ifValue 对应 value，支持 JSON 标量/数组/对象/null。
+          additionalProperties: false
+          properties:
+            parameter:
+              type: string
+              minLength: 1
+            operator:
+              type: string
+              enum:
+              - notEmpty
+              - present
+              - equals
+              - truthy
+              default: notEmpty
+            value:
+              nullable: true
+            on_false:
+              type: string
+              enum:
+              - skip
+              - blocked
+              default: skip
+          required:
+          - parameter
+        assignments:
+          type: array
+          description: 更新已声明的参数；沿用目标 value_type，未提取到值覆盖为 null。并发兄弟不能写同名参数。对应 XML updateParam。
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              name:
+                type: string
+                minLength: 1
+              extract_expression:
+                type: string
+                minLength: 1
+            required:
+            - name
+            - extract_expression
+        wait:
+          type: object
+          description: 仅 wait。与 wait_milliseconds 二选一；duration 为相对等待，until 为绝对到期时刻。计算 base + offset_parameter + offset_milliseconds，until
+            再减当前 UTC。过去时刻立即完成，单次最多 30 天。
+          additionalProperties: false
+          properties:
+            parameter:
+              type: string
+              minLength: 1
+            mode:
+              type: string
+              enum:
+              - duration
+              - until
+              default: duration
+            unit:
+              type: string
+              enum:
+              - seconds
+              - milliseconds
+              - iso8601
+              default: seconds
+            offset_milliseconds:
+              type: integer
+              minimum: -2592000000
+              maximum: 2592000000
+              default: 0
+            offset_parameter:
+              type: string
+              minLength: 1
+            offset_unit:
+              type: string
+              enum:
+              - seconds
+              - milliseconds
+              default: seconds
+          required:
+          - parameter
+        raw_path:
+          type: string
+          description: 显式负向路径，含前导 /，相对于 base_url 路径前缀；保留 ASCII 原文，不插值或再次编码。绕过 path Schema/必填校验，不能同时有 path bindings；禁止问号、井号、空白及控制字符。
+        raw_query:
+          type: string
+          description: 显式负向查询，不带前导 ?；空串表示省略所有 query。保留 ASCII 原文、不插值或再次编码；绕过 query Schema/必填校验，不能同时有 query bindings；禁止井号、空白及控制字符。
     BusinessAssertionCode:
       type: string
       nullable: true
       maxLength: 16000
       description: |
-        可选的业务成功断言完整代码，包含方法名和函数定义，入口格式为 def assert_response(responseBody, globalParam):，必须返回 boolean（true/false，示例代码使用 True/False）。
+        可选的业务成功断言完整代码，包含方法名和函数定义，入口格式必须为 def assert_response(responseBody, globalParam, statusCode, headers):，必须返回 boolean（true/false，示例代码使用 True/False）。
         省略、null、空字符串或仅空白表示未设置；完整保存时未设置即清除原有断言，按 HTTP 200～299 判断请求成功。
-        设置后，在响应完整读取后、当前步骤的 REST 参数提取前调用断言，以其返回值替代 HTTP 状态码成功判定；非 2xx 响应也执行断言。
-        responseBody 为 JSON 解析后的响应体，支持对象、数组和 JSON 标量；无法解析时以 RESPONSE_NOT_JSON 失败，不调用断言。
+        设置后，在响应完整读取后、独立提取当前步骤的 REST 参数并调用断言（断言读取步骤执行前的参数快照），以其返回值替代 HTTP 状态码成功判定；非 2xx 响应也执行断言。
+        statusCode 为真实 HTTP 状态码整数，不能用 responseBody 的业务 code 代替；headers 为小写响应头名到字符串列表的映射，保留重复头顺序，缺失的头不在映射中，例如 headers.get("content-type", [])。
+        responseBody 为 JSON 解析后的响应体，支持对象、数组和 JSON 标量；空响应或非 JSON 时传入 None，仍可核对状态及响应头。参数独立提取，字段缺失、类型不匹配或无可用 JSON 时赋 null，不受断言结果影响。
         globalParam 为参数名称到运行值的映射，只包含当前步骤执行前已成功赋值的全局参数，不包含当前或后续步骤尚未提取的参数。
         返回 True 表示业务断言通过，False 以 ASSERTION_FAILED 失败；执行异常以 ASSERTION_EXECUTION_ERROR 失败，非布尔返回值以 ASSERTION_RETURN_TYPE_ERROR 失败。
-        连接失败或超时仍直接失败，不调用断言；断言通过后仍须完成该步骤关联的参数提取，提取失败则步骤失败。
-        保存和运行前静态校验完整函数定义及入口签名，不执行断言；无效配置返回 400，issues 定位 steps 数组对应项的 assertion_code。
+        连接失败或超时仍直接失败，不调用断言；该步骤关联参数仍独立赋原值或 null；断言失败时也发布，供 finally 清理使用。
+        保存和运行前静态校验完整函数定义及入口签名，不执行断言；可 raise Blocked(...) 表示前提不足，终态为 blocked，仍尝试 finally；无效配置返回 400，issues 定位 steps 数组对应项的 assertion_code。
         使用标准 Python 函数入口 assert_response；不支持 def assert（assert 为保留字）。
         最多 16000 字符，顶层仅允许函数定义；支持同步 Python 计算、循环、条件与常用内置函数，不支持导入模块、类、私有属性、装饰器、类型注解和默认参数。
         在独立进程中执行，CPU 上限 2 秒、总等待上限 3 秒、内存上限 256 MiB；超限按 ASSERTION_EXECUTION_ERROR 失败，不返回异常原文。
       example: |
-        def assert_response(responseBody, globalParam):
-            return responseBody.get("code") == 0 and responseBody.get("data", {}).get("id") == globalParam["expected_id"]
+        def assert_response(responseBody, globalParam, statusCode, headers):
+            return statusCode == 200 and responseBody.get("code") == 0 and responseBody.get("data", {}).get("id") == globalParam["expected_id"]
     StepInput:
-      type: object
-      description: 步骤配置；数组顺序决定执行顺序，id 存在时保留稳定 ID，新增或复制步骤省略 id。interface_id/file_id/version
-        必须指向本项目同一接口版本。 引用初始化步骤需先保存任务以获得稳定 ID，再配置 REST 参数。删除一个被参数引用的步骤必须在同次完整保存中移除或改绑所有引用，否则拒绝。
-      properties:
-        id:
-          type: integer
-          description: 已有步骤稳定 ID
-          example: 1
-          format: int32
-          minimum: 1
-          maximum: 2147483647
-        interface_id:
-          type: integer
-          description: 版本内接口 ID
-          example: 1
-          format: int32
-          minimum: 1
-          maximum: 2147483647
-        file_id:
-          type: integer
-          description: 逻辑 YAML 文件 ID
-          example: 1
-          format: int32
-          minimum: 1
-          maximum: 2147483647
-        version:
-          type: integer
-          description: 显式绑定版本
-          example: 1
-          minimum: 1
-        assertion_code:
-          $ref: '#/components/schemas/BusinessAssertionCode'
-        bindings:
-          type: array
-          description: 参数、认证 header 和 JSON 字段绑定；可选字段未配置则不发送。
-          items:
-            $ref: 'rest-parameter.yaml#/components/schemas/FieldBindingEdit'
-          example: []
-      required:
-      - interface_id
-      - file_id
-      - version
-      - bindings
+      description: 按 step_type 区分节点；position 为同一 execution_scope、同一父节点下唯一的正 int32，允许间断。父只能是本任务 main 根 parallel，子节点只能是
+        main rest/wait/compute；finally 只能包含根 rest/wait/compute。禁止自引用、跨任务、循环、嵌套并发，总节点最多 1000。
+      oneOf:
+      - $ref: '#/components/schemas/ComputeStepInput'
+      - $ref: '#/components/schemas/RestStepInput'
+      - $ref: '#/components/schemas/WaitStepInput'
+      - $ref: '#/components/schemas/ParallelStepInput'
       example:
+        step_type: rest
+        execution_scope: main
+        position: 10
         interface_id: 1
         file_id: 1
         version: 1
         bindings: []
-        assertion_code: null
-      additionalProperties: false
+        headers: []
     Step:
-      type: object
-      description: 步骤详情；新版本提示仅展示，不自动替换绑定。敏感字面值省略 value，编辑时同一稳定步骤同一字段省略 value 可保留原值。
-      properties:
-        id:
-          type: integer
-          description: 已有步骤稳定 ID
-          example: 1
-          format: int32
-          minimum: 1
-          maximum: 2147483647
-        interface_id:
-          type: integer
-          description: 版本内接口 ID
-          example: 1
-          format: int32
-          minimum: 1
-          maximum: 2147483647
-        file_id:
-          type: integer
-          description: 逻辑 YAML 文件 ID
-          example: 1
-          format: int32
-          minimum: 1
-          maximum: 2147483647
-        version:
-          type: integer
-          description: 显式绑定版本
-          example: 1
-          minimum: 1
-        assertion_code:
-          $ref: '#/components/schemas/BusinessAssertionCode'
-        bindings:
-          type: array
-          description: 脱敏后的字段绑定。
-          example: []
-          items:
-            $ref: 'rest-parameter.yaml#/components/schemas/FieldBindingView'
-        position:
-          type: integer
-          description: 展示序号
-          example: 1
-          minimum: 1
-        file_name:
-          type: string
-          description: 逻辑文件名
-          example: 订单接口
-        current_version:
-          type: integer
-          description: 文件当前版本
-          example: 2
-          minimum: 1
-        has_new_version:
-          type: boolean
-          description: 是否有新版本
-          example: true
-        method:
-          type: string
-          description: 方法
-          example: GET
-        path:
-          type: string
-          description: 接口路径
-          example: /orders/{id}
-        execution_phase:
-          type: string
-          enum:
-          - parameters
-          - steps
-          description: 由全局参数引用关系推导：被引用步骤为 parameters，其他为 steps；客户端不写入。
-          example: steps
-      required:
-      - id
-      - interface_id
-      - file_id
-      - version
-      - bindings
-      - position
-      - file_name
-      - current_version
-      - has_new_version
-      - method
-      - path
-      - execution_phase
+      description: 按 step_type 区分节点；position 为同一 execution_scope、同一父节点下唯一的正 int32，允许间断。父只能是本任务 main 根 parallel，子节点只能是
+        main rest/wait/compute；finally 只能包含根 rest/wait/compute。禁止自引用、跨任务、循环、嵌套并发，总节点最多 1000。
+      oneOf:
+      - $ref: '#/components/schemas/ComputeStep'
+      - $ref: '#/components/schemas/RestStep'
+      - $ref: '#/components/schemas/WaitStep'
+      - $ref: '#/components/schemas/ParallelStep'
       example:
+        step_type: rest
+        execution_scope: main
+        position: 10
         id: 1
+        parent_step_id: null
         interface_id: 1
         file_id: 1
         version: 1
         bindings: []
-        assertion_code: null
-        position: 1
+        headers: []
         file_name: 订单接口
         current_version: 2
         has_new_version: true
@@ -887,7 +1178,10 @@ components:
         execution_phase: steps
     TaskWrite:
       type: object
-      description: 原子保存完整任务配置，参数及步骤数组决定各自顺序。REST 来源使用稳定 step_id 或本次提交 steps 数组下标 step_index（从 0 开始）二选一，复用步骤的接口版本与绑定。新步骤与参数可一起提交，保存时转换为稳定 step_id；复制任务时重建全部步骤 ID 并映射参数引用。所有步骤按步骤数组顺序执行一次，每步完成后提取其绑定参数。保存草稿可引用已声明但尚未初始化的 REST 参数，供任务组从严格前序批次继承；单任务启动必须本任务内已初始化，任务组启动须证明前序批次或本任务前序步骤提供值，拒绝同批依赖及循环；同一步骤可供多个参数提取同一次响应，不重新请求。步骤可配置 assertion_code 完整业务断言，复制和运行快照保留断言代码；未设置时按 HTTP 2xx 判断，设置时以断言 boolean 返回值判断。绑定失败、断言失败或提取失败导致运行失败；静态校验不发请求。删除被引用步骤必须同时解除或改绑引用。至少有一个步骤才允许运行；全部步骤成功判定通过且表达式赋值成功则运行成功。
+      description: 原子保存完整执行树及参数。steps 数组仅定义临时 step_index，不决定调度顺序；先建立全部节点 ID，再映射 parent_step_index 与 rest_source.step_index。读取仅返回稳定
+        parent_step_id，根为 null。固定值先初始化，main 按树及 position 执行；parallel 子节点读取同一输入快照，不能互相依赖，已启动子节点收尾后一次发布赋值（含 null），失败不阻止发布。参数名唯一，来源仅允许 main
+        REST 叶子。草稿可声明需要严格前序任务组批次继承的输入；启动须证明输入可用。bindings、headers 和断言均纳入依赖分析；finally 仅校验声明、类型与来源，运行时缺失输入则失败并继续后续清理。保存禁止修改
+        queued/running 或活动组预约任务。
       properties:
         name:
           type: string
@@ -914,16 +1208,17 @@ components:
           default: 30
         global_parameters:
           type: array
-          description: 有序全局参数配置，支持 fixed/rest；名称唯一，步骤只能引用固定参数或前序步骤已赋值的参数。
+          description: 名称唯一的 fixed/rest/expression 参数；REST 来源可为 main/finally REST；expression 来源为 compute。wait/parallel 父节点不能作为参数来源；finally 产出供后续清理引用。
           items:
-            $ref: 'rest-parameter.yaml#/components/schemas/GlobalParameterEdit'
+            $ref: rest-parameter.yaml#/components/schemas/GlobalParameterEdit
           example: []
         steps:
           type: array
-          description: 有序步骤，允许为空
+          description: 扁平节点数组；树由 parent_step_id/parent_step_index 表示，调度按 scope、父子关系及 position；读取仅含稳定父 ID。
           items:
             $ref: '#/components/schemas/StepInput'
           example: []
+          maxItems: 1000
       required:
       - name
       - base_url
@@ -938,7 +1233,7 @@ components:
       additionalProperties: false
     Task:
       type: object
-      description: 任务详情，返回参数到步骤的引用及推导的执行阶段；敏感值脱敏，已有值保留规则见 TaskWrite。
+      description: 任务配置与完整节点树，REST 版本提示不自动切换；敏感绑定脱敏，raw_body.text 原文返回。
       properties:
         name:
           type: string
@@ -965,16 +1260,17 @@ components:
           default: 30
         global_parameters:
           type: array
-          description: 有序全局参数配置，支持 fixed/rest；名称唯一，步骤只能引用固定参数或前序步骤已赋值的参数。
+          description: 名称唯一的 fixed/rest/expression 参数；REST 来源可为 main/finally REST；expression 来源为 compute。wait/parallel 父节点不能作为参数来源；finally 产出供后续清理引用。
           items:
-            $ref: 'rest-parameter.yaml#/components/schemas/GlobalParameter'
+            $ref: rest-parameter.yaml#/components/schemas/GlobalParameter
           example: []
         steps:
           type: array
-          description: 步骤及版本提示
+          description: 扁平节点数组；树由 parent_step_id/parent_step_index 表示，调度按 scope、父子关系及 position；读取仅含稳定父 ID。
           items:
             $ref: '#/components/schemas/Step'
           example: []
+          maxItems: 1000
         id:
           type: integer
           description: 任务 ID
@@ -1109,7 +1405,7 @@ components:
         has_active_run: false
     CopyTask:
       type: object
-      description: 复制到同一项目；名称必填且唯一，参数和版本绑定复制，任务及步骤分配新 ID，不复制运行历史。
+      description: 复制到同一项目，重建全部任务、节点 ID，同时重映射 parent_step_id 与 rest_source.step_id；保留 headers、raw_body、等待、并发、清理及版本绑定，不复制运行历史或预览值。
       properties:
         name:
           type: string
@@ -1159,7 +1455,8 @@ components:
       additionalProperties: false
     Run:
       type: object
-      description: 运行摘要。步骤未设置断言时按 HTTP 2xx 判断，设置时按业务断言 boolean 返回值判断；连接失败、超时、断言或参数提取失败均导致运行失败，后续步骤跳过。
+      description: 任务运行摘要；固定参数初始化 → 主流程 → 全部清理 → 终态。清理结束前保持 running 和运行互斥。主流程失败或阻塞保留 primary_error；阻塞且清理无失败时终态 blocked；清理失败终态 failed，仅清理失败时顶层 CLEANUP_FAILED。未配置清理为
+        skipped，整体耗时包括等待、排队与清理。
       properties:
         id:
           type: integer
@@ -1191,6 +1488,7 @@ components:
           - running
           - succeeded
           - failed
+          - blocked
         created_at:
           type: string
           description: 接受运行时间
@@ -1219,6 +1517,7 @@ components:
         error_code:
           type: string
           description: 错误分类：HTTP_STATUS_ERROR、CONNECTION_ERROR、TIMEOUT、RESPONSE_NOT_JSON、EXTRACTION_NOT_FOUND、EXTRACTION_TYPE_ERROR、ASSERTION_FAILED、ASSERTION_EXECUTION_ERROR、ASSERTION_RETURN_TYPE_ERROR、EXECUTION_INTERRUPTED。
+            新增 INVALID_STEP_STRUCTURE、RAW_BODY_CONFLICT、PARAMETER_NOT_AVAILABLE、PARALLEL_FAILED、PARALLEL_ABORTED、CLEANUP_INPUT_UNAVAILABLE、CLEANUP_FAILED、UPSTREAM_FAILED。已接受运行的失败从查询返回。
           example: null
           nullable: true
         error_message:
@@ -1226,6 +1525,42 @@ components:
           description: 脱敏错误说明
           example: null
           nullable: true
+        execution_stage:
+          type: string
+          description: 当前执行阶段；queued 初始为 main，全部结束为 finished。
+          example: main
+          enum:
+          - main
+          - finally
+          - finished
+        primary_error:
+          type: object
+          nullable: true
+          description: 主流程第一失败原因；清理失败不覆盖，主流程成功时为 null。
+          properties:
+            code:
+              type: string
+              description: 主流程错误分类。
+              example: PARALLEL_FAILED
+            message:
+              type: string
+              description: 不包含并发响应内容的错误摘要。
+              example: 并发节点失败
+          required:
+          - code
+          - message
+          additionalProperties: false
+          example: null
+        cleanup_status:
+          type: string
+          description: 清理状态；无 finally 为 skipped。
+          example: pending
+          enum:
+          - pending
+          - running
+          - succeeded
+          - failed
+          - skipped
       required:
       - id
       - task_id
@@ -1237,7 +1572,10 @@ components:
       - duration_ms
       - error_code
       - error_message
-      example:
+      - execution_stage
+      - primary_error
+      - cleanup_status
+      example: &id001
         id: 1
         task_id: 1
         project_id: 1
@@ -1248,90 +1586,20 @@ components:
         duration_ms: null
         error_code: null
         error_message: null
+        execution_stage: main
+        primary_error: null
+        cleanup_status: pending
     RunStep:
-      type: object
-      description: 运行步骤结果；每步最多请求一次；跳过步骤没有请求记录。succeeded 表示 HTTP 状态码或业务断言判定通过，且关联参数均提取成功；断言执行期间保持 running。
-      properties:
-        id:
-          type: integer
-          description: 运行步骤 ID
-          example: 1
-          format: int32
-          minimum: 1
-          maximum: 2147483647
-        step_id:
-          type: integer
-          description: 快照中的任务步骤稳定 ID
-          example: 1
-          format: int32
-          minimum: 1
-          maximum: 2147483647
-        position:
-          type: integer
-          description: 执行序号
-          example: 1
-          minimum: 1
-        status:
-          type: string
-          description: 步骤状态
-          example: pending
-          enum:
-          - pending
-          - running
-          - succeeded
-          - failed
-          - skipped
-        request_id:
-          type: integer
-          description: 请求记录 ID，未发送或跳过为 null
-          example: null
-          format: int32
-          nullable: true
-          minimum: 1
-        started_at:
-          type: string
-          description: 开始时间
-          example: '2026-10-13T07:00:00Z'
-          format: date-time
-          nullable: true
-        finished_at:
-          type: string
-          description: 结束时间
-          example: '2026-10-13T07:00:00Z'
-          format: date-time
-          nullable: true
-        duration_ms:
-          type: integer
-          description: 耗时毫秒，未结束为 null
-          example: null
-          format: int64
-          nullable: true
-          minimum: 0
-        error_code:
-          type: string
-          description: 错误分类；断言返回 False 为 ASSERTION_FAILED，执行异常为 ASSERTION_EXECUTION_ERROR，非布尔返回值为 ASSERTION_RETURN_TYPE_ERROR；服务重启遗留运行标记 EXECUTION_INTERRUPTED
-          example: null
-          nullable: true
-        error_message:
-          type: string
-          description: 脱敏错误说明
-          example: null
-          nullable: true
-      required:
-      - id
-      - step_id
-      - position
-      - status
-      - request_id
-      - started_at
-      - finished_at
-      - duration_ms
-      - error_code
-      - error_message
-      example:
+      description: 按节点类型区分的可见运行结果，不展开 parallel 子节点。
+      oneOf:
+      - $ref: '#/components/schemas/ComputeRunStep'
+      - $ref: '#/components/schemas/RestRunStep'
+      - $ref: '#/components/schemas/WaitRunStep'
+      - $ref: '#/components/schemas/ParallelRunStep'
+      example: &id002
         id: 1
         step_id: 1
-        position: 1
+        position: 10
         status: pending
         request_id: null
         started_at: '2026-10-13T07:00:00Z'
@@ -1339,12 +1607,15 @@ components:
         duration_ms: null
         error_code: null
         error_message: null
+        step_type: rest
+        execution_scope: main
+        parent_run_step_id: null
     Snapshot:
       type: object
-      description: 脱敏的不可变任务配置，包含参数到稳定步骤 ID 的引用映射和全部步骤接口定义。运行结果独立保存，不修改快照。
+      description: 不可变完整配置快照；保存全部节点、稳定父引用、headers、raw_body、等待及并发配置，以及 main/finally REST 的固定版本接口定义。raw_body.text 原文返回且不列入脱敏路径，其余敏感字段脱敏；历史查询不依赖当前配置。
       properties:
         task:
-          description: 任务详情；敏感值不直接返回，已有敏感值编辑保留规则见 TaskWrite。
+          description: 完整配置树，headers 独立保存，raw_body 原文返回。
           example:
             name: 订单流程
             description: 订单回归
@@ -1360,7 +1631,7 @@ components:
           - $ref: '#/components/schemas/Task'
         interface_definitions:
           type: array
-          description: 所有步骤接口定义，包括参数引用的初始化步骤，返回前脱敏。
+          description: 主流程、parallel 子节点与 finally 的全部 REST 接口定义；wait/parallel 无接口定义。
           items:
             type: object
             description: 完整接口定义
@@ -1403,22 +1674,14 @@ components:
       description: 运行详情，通过手动刷新查询。
       properties:
         run:
-          description: 运行摘要。步骤未设置断言时按 HTTP 2xx 判断，设置时按业务断言 boolean 返回值判断；连接失败、超时、断言或参数提取失败均导致运行失败，后续步骤跳过。
-          example:
-            id: 1
-            task_id: 1
-            project_id: 1
-            status: queued
-            created_at: '2026-10-13T07:00:00Z'
-            started_at: '2026-10-13T07:00:00Z'
-            finished_at: '2026-10-13T07:00:00Z'
-            duration_ms: null
-            error_code: null
-            error_message: null
+          description: 任务运行摘要；固定参数初始化 → 主流程 → 全部清理 → 终态。清理结束前保持 running 和运行互斥。主流程失败或阻塞保留 primary_error；阻塞且清理无失败时终态 blocked；清理失败终态 failed，仅清理失败时顶层 CLEANUP_FAILED。未配置清理为
+            skipped，整体耗时包括等待、排队与清理。
+          example: *id001
           allOf:
           - $ref: '#/components/schemas/Run'
         config_snapshot:
-          description: 脱敏的不可变完整快照；数据库内部保留执行原值。接口定义随运行复制，不依赖当前 YAML；敏感字段省略并提供 redacted_paths。
+          description: 不可变完整配置快照；保存全部节点、稳定父引用、headers、raw_body、等待及并发配置，以及 main/finally REST 的固定版本接口定义。raw_body.text
+            原文返回且不列入脱敏路径，其余敏感字段脱敏；历史查询不依赖当前配置。
           example:
             interface_definitions: []
             redacted_paths: []
@@ -1426,7 +1689,7 @@ components:
           - $ref: '#/components/schemas/Snapshot'
         steps:
           type: array
-          description: 按序排列的运行步骤结果
+          description: 先 main 后 finally，按树前序及兄弟 position/id 稳定排序；仅展示 parallel 外叶子与 parallel 父节点，不展开其内部子节点运行结果。
           items:
             $ref: '#/components/schemas/RunStep'
           example: []
@@ -1434,25 +1697,45 @@ components:
           type: array
           description: 按初始化顺序排列的本次运行参数结果，独立于不可变配置快照。
           items:
-            $ref: 'rest-parameter.yaml#/components/schemas/RunParameter'
+            $ref: rest-parameter.yaml#/components/schemas/RunParameter
           example: []
+        leaf_counts:
+          description: REST/wait 叶子统计，包含 parallel 子节点及清理；不计 parallel 父节点。
+          example:
+            total: 0
+            pending: 0
+            running: 0
+            succeeded: 0
+            failed: 0
+            skipped: 0
+          allOf:
+          - $ref: '#/components/schemas/NodeCounts'
+        control_counts:
+          description: 控制节点统计，仅含 parallel 父节点，不与叶子混算进度。
+          example:
+            total: 0
+            pending: 0
+            running: 0
+            succeeded: 0
+            failed: 0
+            skipped: 0
+          allOf:
+          - $ref: '#/components/schemas/NodeCounts'
+        request_count:
+          type: integer
+          description: 普通 task_requests 数量加全部 parallel_stats.request_count；可能大于请求详情列表总数。
+          example: 0
+          minimum: 0
       required:
       - run
       - config_snapshot
       - steps
       - global_parameters
+      - leaf_counts
+      - control_counts
+      - request_count
       example:
-        run:
-          id: 1
-          task_id: 1
-          project_id: 1
-          status: queued
-          created_at: '2026-10-13T07:00:00Z'
-          started_at: '2026-10-13T07:00:00Z'
-          finished_at: '2026-10-13T07:00:00Z'
-          duration_ms: null
-          error_code: null
-          error_message: null
+        run: *id001
         config_snapshot:
           task:
             id: 1
@@ -1469,6 +1752,21 @@ components:
           redacted_paths: []
         steps: []
         global_parameters: []
+        leaf_counts:
+          total: 0
+          pending: 0
+          running: 0
+          succeeded: 0
+          failed: 0
+          skipped: 0
+        control_counts:
+          total: 0
+          pending: 0
+          running: 0
+          succeeded: 0
+          failed: 0
+          skipped: 0
+        request_count: 0
     Header:
       type: object
       description: HTTP 头；数组允许重复名称。
@@ -1495,9 +1793,7 @@ components:
         redacted: true
     Request:
       type: object
-      description: 每个请求关联实际执行的步骤；parameters 阶段步骤可被多个全局参数引用，请求只执行一次，参数结果通过 request_id
-        关联同一响应。所有敏感参数、派生 URL/header/请求体/响应回显和错误需脱敏。Authorization/Cookie/Set-Cookie
-        默认脱敏。
+      description: 仅 parallel 外 REST（含 finally）创建逐请求记录，发送前持久化；wait/parallel 及并发 REST 不创建。并发响应仅在父节点统计展示，请求总数可大于详情列表条数。
       properties:
         id:
           type: integer
@@ -1529,7 +1825,7 @@ components:
           maximum: 2147483647
         position:
           type: integer
-          description: 所属阶段的序号，先按 phase(parameters 在前) 再按 position 排序。
+          description: 所属节点的兄弟排序值；树内位置通过 run_step_id 与快照关联。分页按 phase(parameters、steps、finally)、position、id 排序。
           example: 1
           minimum: 1
         method:
@@ -1548,7 +1844,7 @@ components:
           example: []
         request_body:
           type: string
-          description: 脱敏请求体文本，没有为 null
+          description: 实际发送文本；未配置为 null，原始模式空文本为零字节；raw_body 原文直接返回且不脱敏。
           example: null
           nullable: true
         response_status:
@@ -1598,7 +1894,8 @@ components:
           minimum: 0
         error_code:
           type: string
-          description: 错误分类；断言返回 False 为 ASSERTION_FAILED，执行异常为 ASSERTION_EXECUTION_ERROR，非布尔返回值为 ASSERTION_RETURN_TYPE_ERROR；服务重启遗留运行标记 EXECUTION_INTERRUPTED
+          description: 错误分类；断言返回 False 为 ASSERTION_FAILED，执行异常为 ASSERTION_EXECUTION_ERROR，非布尔返回值为 ASSERTION_RETURN_TYPE_ERROR；服务重启遗留运行标记
+            EXECUTION_INTERRUPTED
           example: null
           nullable: true
         error_message:
@@ -1612,18 +1909,12 @@ components:
           example: true
         phase:
           type: string
-          description: 请求所属阶段
+          description: 展示分类，parameters/steps/finally；不决定真实执行顺序。
           example: parameters
           enum:
           - parameters
           - steps
-        run_parameter_id:
-          type: integer
-          description: 兼容旧字段，新记录为 null；参数结果使用 request_id 关联请求。
-          example: null
-          format: int32
-          nullable: true
-          minimum: 1
+          - finally
       required:
       - id
       - run_id
@@ -1645,7 +1936,6 @@ components:
       - error_message
       - redacted
       - phase
-      - run_parameter_id
       example:
         id: 1
         run_id: 1
@@ -1667,7 +1957,6 @@ components:
         error_message: null
         redacted: true
         phase: steps
-        run_parameter_id: null
     TaskPage:
       type: object
       description: 稳定分页，超出末页返回空 items。
@@ -1851,6 +2140,1175 @@ components:
       required:
       - id
       - deleted
+    RawBody:
+      type: object
+      description: 原始 UTF-8 JSON 请求体；对象存在即启用，空 text 发送零字节。保留首尾空白，不解析 JSON、不插值、不脱敏；与 body 绑定互斥。目标接口必须声明 application/json，请求头
+        Content-Type 仅允许 application/json，缺省自动补充。仅绕过请求体语法和 Schema 校验，其余校验保留。
+      properties:
+        text:
+          type: string
+          description: 实际发送的原始文本；允许合法或非法 JSON、空字符串。
+          example: '{"name":'
+      required:
+      - text
+      additionalProperties: false
+      example:
+        text: '{"name":'
+    HeaderBindingEdit:
+      type: object
+      description: 独立请求头绑定；名称不区分大小写且不得重复，校验值类型、换行和执行器保留头；不使用 location。
+      properties:
+        name:
+          type: string
+          description: HTTP 请求头名称。
+          example: X-Client
+          minLength: 1
+        binding:
+          description: 字面值或全局参数引用，纳入读取依赖分析。
+          example:
+            kind: global
+            parameter_name: client
+          allOf:
+          - $ref: rest-parameter.yaml#/components/schemas/BindingEdit
+      required:
+      - name
+      - binding
+      additionalProperties: false
+      example:
+        name: X-Client
+        binding:
+          kind: global
+          parameter_name: client
+    HeaderBindingView:
+      type: object
+      description: 独立请求头绑定；名称不区分大小写且不得重复，校验值类型、换行和执行器保留头；不使用 location。
+      properties:
+        name:
+          type: string
+          description: HTTP 请求头名称。
+          example: X-Client
+          minLength: 1
+        binding:
+          description: 字面值或全局参数引用，纳入读取依赖分析。
+          example:
+            kind: global
+            parameter_name: client
+          allOf:
+          - $ref: rest-parameter.yaml#/components/schemas/BindingView
+      required:
+      - name
+      - binding
+      additionalProperties: false
+      example:
+        name: X-Client
+        binding:
+          kind: global
+          parameter_name: client
+    RestStepInput:
+      type: object
+      description: 按 step_type 区分节点；position 为同一 execution_scope、同一父节点下唯一的正 int32，允许间断。父只能是本任务 main 根 parallel，子节点只能是
+        main rest/wait/compute；finally 只能包含根 rest/wait/compute。禁止自引用、跨任务、循环、嵌套并发，总节点最多 1000。 wait/compute/parallel 禁止 REST 专用字段、headers、raw_body
+        和 assertion_code。
+      properties:
+        options:
+          $ref: '#/components/schemas/ExecutionOptions'
+        id:
+          type: integer
+          description: 已有步骤稳定 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        step_type:
+          type: string
+          description: 节点类型。
+          example: rest
+          enum:
+          - rest
+        execution_scope:
+          type: string
+          description: 主流程或清理流程；parallel 仅允许 main。
+          example: main
+          enum:
+          - main
+          - finally
+        position:
+          type: integer
+          description: 兄弟排序值；不由 steps 数组顺序推导。
+          example: 10
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        parent_step_id:
+          type: integer
+          description: 稳定 parallel 父节点 ID；根节点读取为 null，写入时省略。
+          example: null
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+        parent_step_index:
+          type: integer
+          description: 本次完整 steps 数组的父下标，从 0 开始；与 parent_step_id 二选一，仅写入支持。
+          example: 0
+          minimum: 0
+          maximum: 999
+        interface_id:
+          type: integer
+          description: 版本内接口 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        file_id:
+          type: integer
+          description: 逻辑 YAML 文件 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        version:
+          type: integer
+          description: 显式绑定版本
+          example: 1
+          minimum: 1
+        assertion_code:
+          $ref: '#/components/schemas/BusinessAssertionCode'
+        bindings:
+          type: array
+          description: 仅 path/query/body 字段绑定，禁止 location=header；raw_body 与任何 body 绑定互斥，可与 path/query 及 headers 共存。
+          items:
+            $ref: rest-parameter.yaml#/components/schemas/FieldBindingEdit
+          example: []
+        headers:
+          type: array
+          description: 独立请求头绑定；省略时为空数组。
+          example: []
+          items:
+            $ref: '#/components/schemas/HeaderBindingEdit'
+          default: []
+        raw_body:
+          description: 原始请求体，仅包含 text；修改时提交新原文，无脱敏占位符。
+          example:
+            text: '{"name":'
+          allOf:
+          - $ref: '#/components/schemas/RawBody'
+      required:
+      - step_type
+      - execution_scope
+      - position
+      - interface_id
+      - file_id
+      - version
+      - bindings
+      additionalProperties: false
+      example:
+        step_type: rest
+        execution_scope: main
+        position: 10
+        interface_id: 1
+        file_id: 1
+        version: 1
+        bindings: []
+        headers: []
+    WaitStepInput:
+      type: object
+      oneOf:
+      - required:
+        - wait_milliseconds
+        not:
+          required:
+          - options
+          properties:
+            options:
+              required:
+              - wait
+      - required:
+        - options
+        properties:
+          options:
+            required:
+            - wait
+        not:
+          required:
+          - wait_milliseconds
+      description: 按 step_type 区分节点；position 为同一 execution_scope、同一父节点下唯一的正 int32，允许间断。父只能是本任务 main 根 parallel，子节点只能是
+        main rest/wait/compute；finally 只能包含根 rest/wait/compute。禁止自引用、跨任务、循环、嵌套并发，总节点最多 1000。 wait/compute/parallel 禁止 REST 专用字段、headers、raw_body
+        和 assertion_code。
+      properties:
+        options:
+          $ref: '#/components/schemas/ExecutionOptions'
+        id:
+          type: integer
+          description: 已有步骤稳定 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        step_type:
+          type: string
+          description: 节点类型。
+          example: wait
+          enum:
+          - wait
+        execution_scope:
+          type: string
+          description: 主流程或清理流程；parallel 仅允许 main。
+          example: main
+          enum:
+          - main
+          - finally
+        position:
+          type: integer
+          description: 兄弟排序值；不由 steps 数组顺序推导。
+          example: 10
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        parent_step_id:
+          type: integer
+          description: 稳定 parallel 父节点 ID；根节点读取为 null，写入时省略。
+          example: null
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+        parent_step_index:
+          type: integer
+          description: 本次完整 steps 数组的父下标，从 0 开始；与 parent_step_id 二选一，仅写入支持。
+          example: 0
+          minimum: 0
+          maximum: 999
+        wait_milliseconds:
+          type: integer
+          description: 固定等待 1～2592000000 毫秒（30 天），与 options.wait 动态等待二选一；不发 HTTP、不生成参数。
+          example: 1000
+          minimum: 1
+          maximum: 2592000000
+      required:
+      - step_type
+      - execution_scope
+      - position
+      additionalProperties: false
+      example:
+        step_type: wait
+        execution_scope: main
+        position: 10
+        wait_milliseconds: 1000
+    ParallelStepInput:
+      type: object
+      description: 按 step_type 区分节点；position 为同一 execution_scope、同一父节点下唯一的正 int32，允许间断。父只能是本任务 main 根 parallel，子节点只能是
+        main rest/wait/compute；finally 只能包含根 rest/wait/compute。禁止自引用、跨任务、循环、嵌套并发，总节点最多 1000。 wait/compute/parallel 禁止 REST 专用字段、headers、raw_body
+        和 assertion_code。
+      properties:
+        options:
+          $ref: '#/components/schemas/ExecutionOptions'
+        id:
+          type: integer
+          description: 已有步骤稳定 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        step_type:
+          type: string
+          description: 节点类型。
+          example: parallel
+          enum:
+          - parallel
+        execution_scope:
+          type: string
+          description: 主流程或清理流程；parallel 仅允许 main。
+          example: main
+          enum:
+          - main
+        position:
+          type: integer
+          description: 兄弟排序值；不由 steps 数组顺序推导。
+          example: 10
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        parent_step_id:
+          type: integer
+          description: 稳定 parallel 父节点 ID；根节点读取为 null，写入时省略。
+          example: null
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+        parent_step_index:
+          type: integer
+          description: 本次完整 steps 数组的父下标，从 0 开始；与 parent_step_id 二选一，仅写入支持。
+          example: 0
+          minimum: 0
+          maximum: 999
+        max_concurrency:
+          type: integer
+          description: 本节点活动子步骤上限，wait 也计入；必须有至少两个 rest/wait/compute 子节点，不可嵌套。
+          example: 2
+          minimum: 1
+          maximum: 8
+      required:
+      - step_type
+      - execution_scope
+      - position
+      - max_concurrency
+      additionalProperties: false
+      example:
+        step_type: parallel
+        execution_scope: main
+        position: 10
+        max_concurrency: 2
+    RestStep:
+      type: object
+      description: 按 step_type 区分节点；position 为同一 execution_scope、同一父节点下唯一的正 int32，允许间断。父只能是本任务 main 根 parallel，子节点只能是
+        main rest/wait/compute；finally 只能包含根 rest/wait/compute。禁止自引用、跨任务、循环、嵌套并发，总节点最多 1000。 wait/compute/parallel 禁止 REST 专用字段、headers、raw_body
+        和 assertion_code。
+      properties:
+        options:
+          $ref: '#/components/schemas/ExecutionOptions'
+        id:
+          type: integer
+          description: 已有步骤稳定 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        step_type:
+          type: string
+          description: 节点类型。
+          example: rest
+          enum:
+          - rest
+        execution_scope:
+          type: string
+          description: 主流程或清理流程；parallel 仅允许 main。
+          example: main
+          enum:
+          - main
+          - finally
+        position:
+          type: integer
+          description: 兄弟排序值；不由 steps 数组顺序推导。
+          example: 10
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        parent_step_id:
+          type: integer
+          description: 稳定 parallel 父节点 ID；根节点读取为 null，写入时省略。
+          example: null
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+        interface_id:
+          type: integer
+          description: 版本内接口 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        file_id:
+          type: integer
+          description: 逻辑 YAML 文件 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        version:
+          type: integer
+          description: 显式绑定版本
+          example: 1
+          minimum: 1
+        assertion_code:
+          $ref: '#/components/schemas/BusinessAssertionCode'
+        bindings:
+          type: array
+          description: 仅 path/query/body 字段绑定，禁止 location=header；raw_body 与任何 body 绑定互斥，可与 path/query 及 headers 共存。
+          example: []
+          items:
+            $ref: rest-parameter.yaml#/components/schemas/FieldBindingView
+        headers:
+          type: array
+          description: 独立请求头绑定；省略时为空数组。
+          example: []
+          items:
+            $ref: '#/components/schemas/HeaderBindingView'
+          default: []
+        raw_body:
+          description: 原始请求体，仅包含 text；修改时提交新原文，无脱敏占位符。
+          example:
+            text: '{"name":'
+          allOf:
+          - $ref: '#/components/schemas/RawBody'
+        file_name:
+          type: string
+          description: 逻辑文件名
+          example: 订单接口
+        current_version:
+          type: integer
+          description: 文件当前版本
+          example: 2
+          minimum: 1
+        has_new_version:
+          type: boolean
+          description: 是否有新版本
+          example: true
+        method:
+          type: string
+          description: 方法
+          example: GET
+        path:
+          type: string
+          description: 接口路径
+          example: /orders/{id}
+        execution_phase:
+          type: string
+          enum:
+          - parameters
+          - steps
+          - finally
+          description: 仅用于展示：main REST 按参数来源分为 parameters/steps，清理 REST 为 finally；不决定执行顺序。
+          example: steps
+      required:
+      - step_type
+      - execution_scope
+      - position
+      - id
+      - parent_step_id
+      - interface_id
+      - file_id
+      - version
+      - bindings
+      - headers
+      - file_name
+      - current_version
+      - has_new_version
+      - method
+      - path
+      - execution_phase
+      additionalProperties: false
+      example:
+        step_type: rest
+        execution_scope: main
+        position: 10
+        id: 1
+        parent_step_id: null
+        interface_id: 1
+        file_id: 1
+        version: 1
+        bindings: []
+        headers: []
+        file_name: 订单接口
+        current_version: 2
+        has_new_version: true
+        method: GET
+        path: /orders/{id}
+        execution_phase: steps
+    WaitStep:
+      type: object
+      oneOf:
+      - required:
+        - wait_milliseconds
+        not:
+          required:
+          - options
+          properties:
+            options:
+              required:
+              - wait
+      - required:
+        - options
+        properties:
+          options:
+            required:
+            - wait
+        not:
+          required:
+          - wait_milliseconds
+      description: 按 step_type 区分节点；position 为同一 execution_scope、同一父节点下唯一的正 int32，允许间断。父只能是本任务 main 根 parallel，子节点只能是
+        main rest/wait/compute；finally 只能包含根 rest/wait/compute。禁止自引用、跨任务、循环、嵌套并发，总节点最多 1000。 wait/compute/parallel 禁止 REST 专用字段、headers、raw_body
+        和 assertion_code。
+      properties:
+        options:
+          $ref: '#/components/schemas/ExecutionOptions'
+        id:
+          type: integer
+          description: 已有步骤稳定 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        step_type:
+          type: string
+          description: 节点类型。
+          example: wait
+          enum:
+          - wait
+        execution_scope:
+          type: string
+          description: 主流程或清理流程；parallel 仅允许 main。
+          example: main
+          enum:
+          - main
+          - finally
+        position:
+          type: integer
+          description: 兄弟排序值；不由 steps 数组顺序推导。
+          example: 10
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        parent_step_id:
+          type: integer
+          description: 稳定 parallel 父节点 ID；根节点读取为 null，写入时省略。
+          example: null
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+        wait_milliseconds:
+          type: integer
+          description: 固定等待 1～2592000000 毫秒（30 天），与 options.wait 动态等待二选一；不发 HTTP、不生成参数。
+          example: 1000
+          minimum: 1
+          maximum: 2592000000
+      required:
+      - step_type
+      - execution_scope
+      - position
+      - id
+      - parent_step_id
+      additionalProperties: false
+      example:
+        step_type: wait
+        execution_scope: main
+        position: 10
+        id: 1
+        parent_step_id: null
+        wait_milliseconds: 1000
+    ParallelStep:
+      type: object
+      description: 按 step_type 区分节点；position 为同一 execution_scope、同一父节点下唯一的正 int32，允许间断。父只能是本任务 main 根 parallel，子节点只能是
+        main rest/wait/compute；finally 只能包含根 rest/wait/compute。禁止自引用、跨任务、循环、嵌套并发，总节点最多 1000。 wait/compute/parallel 禁止 REST 专用字段、headers、raw_body
+        和 assertion_code。
+      properties:
+        options:
+          $ref: '#/components/schemas/ExecutionOptions'
+        id:
+          type: integer
+          description: 已有步骤稳定 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        step_type:
+          type: string
+          description: 节点类型。
+          example: parallel
+          enum:
+          - parallel
+        execution_scope:
+          type: string
+          description: 主流程或清理流程；parallel 仅允许 main。
+          example: main
+          enum:
+          - main
+        position:
+          type: integer
+          description: 兄弟排序值；不由 steps 数组顺序推导。
+          example: 10
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        parent_step_id:
+          type: integer
+          description: 稳定 parallel 父节点 ID；根节点读取为 null，写入时省略。
+          example: null
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+        max_concurrency:
+          type: integer
+          description: 本节点活动子步骤上限，wait 也计入；必须有至少两个 rest/wait/compute 子节点，不可嵌套。
+          example: 2
+          minimum: 1
+          maximum: 8
+      required:
+      - step_type
+      - execution_scope
+      - position
+      - id
+      - parent_step_id
+      - max_concurrency
+      additionalProperties: false
+      example:
+        step_type: parallel
+        execution_scope: main
+        position: 10
+        id: 1
+        parent_step_id: null
+        max_concurrency: 2
+    ParallelStats:
+      type: object
+      description: parallel 父节点实时累计统计；REST 状态计数之和恒等于 rest_total，wait 不计入。子节点终态与统计增量短事务原子提交，结果只合并一次；中断保留已提交统计，不补响应样本。response_count=0
+        时 sum=0、avg/max/min=null。
+      properties:
+        blocked_count:
+          type: integer
+          description: 前提不足而阻塞的节点数。
+          minimum: 0
+          default: 0
+        rest_total:
+          type: integer
+          description: 配置的 REST 子节点总数，不含 wait。
+          example: 0
+          minimum: 0
+        pending_count:
+          type: integer
+          description: 尚未启动的 REST 数。
+          example: 0
+          minimum: 0
+        running_count:
+          type: integer
+          description: 正在执行的 REST 数。
+          example: 0
+          minimum: 0
+        succeeded_count:
+          type: integer
+          description: HTTP 或配置断言判定成功的 REST 数；参数为空不影响成功判定。
+          example: 0
+          minimum: 0
+        failed_count:
+          type: integer
+          description: 失败 REST 数，包含发送前失败。
+          example: 0
+          minimum: 0
+        skipped_count:
+          type: integer
+          description: 未启动而跳过的 REST 数。
+          example: 0
+          minimum: 0
+        request_count:
+          type: integer
+          description: 已持久化发送意图且调用发送流程的次数，不保证对端收到。
+          example: 0
+          minimum: 0
+        response_count:
+          type: integer
+          description: 完整收到 HTTP 响应的次数，包含非 2xx、断言或提取失败，不含超时或不完整响应。
+          example: 0
+          minimum: 0
+        response_time_sum_ms:
+          type: number
+          description: 完整响应耗时总和；无完整响应时为 0。 单调时钟从调用发送器到接收完整响应体，包含连接与网络，不含排队、槽位等待、断言、提取及持久化；单位毫秒，保留三位小数。
+          example: 0
+          minimum: 0
+        avg_response_time_ms:
+          type: number
+          description: sum / response_count。 单调时钟从调用发送器到接收完整响应体，包含连接与网络，不含排队、槽位等待、断言、提取及持久化；单位毫秒，保留三位小数。
+          example: null
+          minimum: 0
+          nullable: true
+        max_response_time_ms:
+          type: number
+          description: 完整响应最大耗时。 单调时钟从调用发送器到接收完整响应体，包含连接与网络，不含排队、槽位等待、断言、提取及持久化；单位毫秒，保留三位小数。
+          example: null
+          minimum: 0
+          nullable: true
+        min_response_time_ms:
+          type: number
+          description: 完整响应最小耗时。 单调时钟从调用发送器到接收完整响应体，包含连接与网络，不含排队、槽位等待、断言、提取及持久化；单位毫秒，保留三位小数。
+          example: null
+          minimum: 0
+          nullable: true
+      required:
+      - rest_total
+      - pending_count
+      - running_count
+      - succeeded_count
+      - failed_count
+      - skipped_count
+      - request_count
+      - response_count
+      - response_time_sum_ms
+      - avg_response_time_ms
+      - max_response_time_ms
+      - min_response_time_ms
+      additionalProperties: false
+      example: &id003
+        rest_total: 0
+        pending_count: 0
+        running_count: 0
+        succeeded_count: 0
+        failed_count: 0
+        skipped_count: 0
+        request_count: 0
+        response_count: 0
+        response_time_sum_ms: 0
+        avg_response_time_ms: null
+        max_response_time_ms: null
+        min_response_time_ms: null
+    RestRunStep:
+      type: object
+      description: 仅返回 parallel 外 REST、wait、compute 及 parallel 父节点；并发子节点运行结果不展开。成功由 HTTP 或配置断言判定，参数独立赋值且缺失时为 null；parallel 耗时为包含排队、等待及收尾的整体墙钟耗时。
+      properties:
+        runId:
+          type: string
+          format: uuid
+          description: 本次步骤运行的全局唯一标识，与日志 runId 一致；不同于任务级 run_id。
+        id:
+          type: integer
+          description: 运行步骤 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        step_id:
+          type: integer
+          description: 快照中的任务步骤稳定 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        position:
+          type: integer
+          description: 同一 scope、同一父节点内的兄弟排序值。
+          example: 10
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        status:
+          type: string
+          description: 步骤状态
+          example: pending
+          enum:
+          - pending
+          - running
+          - succeeded
+          - failed
+          - skipped
+          - blocked
+        request_id:
+          type: integer
+          description: 请求记录 ID，未发送或跳过为 null
+          example: null
+          format: int32
+          nullable: true
+          minimum: 1
+        started_at:
+          type: string
+          description: 开始时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          description: 结束时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        duration_ms:
+          type: integer
+          description: 耗时毫秒，未结束为 null
+          example: null
+          format: int64
+          nullable: true
+          minimum: 0
+        error_code:
+          type: string
+          description: 错误分类；断言返回 False 为 ASSERTION_FAILED，执行异常为 ASSERTION_EXECUTION_ERROR，非布尔返回值为 ASSERTION_RETURN_TYPE_ERROR；服务重启遗留运行标记
+            EXECUTION_INTERRUPTED
+          example: null
+          nullable: true
+        error_message:
+          type: string
+          description: 脱敏错误说明
+          example: null
+          nullable: true
+        step_type:
+          type: string
+          description: 运行节点类型。
+          example: rest
+          enum:
+          - rest
+        execution_scope:
+          type: string
+          description: 运行节点所属流程。
+          example: main
+          enum:
+          - main
+          - finally
+        parent_run_step_id:
+          type: integer
+          description: 运行父节点 ID；查询仅返回根节点，因此为 null；完整层级由快照恢复。
+          example: null
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+      required:
+      - id
+      - step_id
+      - position
+      - status
+      - request_id
+      - started_at
+      - finished_at
+      - duration_ms
+      - error_code
+      - error_message
+      - step_type
+      - execution_scope
+      - parent_run_step_id
+      example: *id002
+      additionalProperties: false
+    WaitRunStep:
+      type: object
+      description: 仅返回 parallel 外 REST、wait、compute 及 parallel 父节点；并发子节点运行结果不展开。成功由 HTTP 或配置断言判定，参数独立赋值且缺失时为 null；parallel 耗时为包含排队、等待及收尾的整体墙钟耗时。
+      properties:
+        runId:
+          type: string
+          format: uuid
+          description: 本次步骤运行的全局唯一标识，与日志 runId 一致；不同于任务级 run_id。
+        id:
+          type: integer
+          description: 运行步骤 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        step_id:
+          type: integer
+          description: 快照中的任务步骤稳定 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        position:
+          type: integer
+          description: 同一 scope、同一父节点内的兄弟排序值。
+          example: 10
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        status:
+          type: string
+          description: 步骤状态
+          example: pending
+          enum:
+          - pending
+          - running
+          - succeeded
+          - failed
+          - skipped
+          - blocked
+        request_id:
+          type: integer
+          description: wait/parallel 不创建请求记录，恒为 null。
+          example: null
+          format: int32
+          nullable: true
+          minimum: 1
+          enum:
+          - null
+        started_at:
+          type: string
+          description: 开始时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          description: 结束时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        duration_ms:
+          type: integer
+          description: 耗时毫秒，未结束为 null
+          example: null
+          format: int64
+          nullable: true
+          minimum: 0
+        error_code:
+          type: string
+          description: 错误分类；断言返回 False 为 ASSERTION_FAILED，执行异常为 ASSERTION_EXECUTION_ERROR，非布尔返回值为 ASSERTION_RETURN_TYPE_ERROR；服务重启遗留运行标记
+            EXECUTION_INTERRUPTED
+          example: null
+          nullable: true
+        error_message:
+          type: string
+          description: 脱敏错误说明
+          example: null
+          nullable: true
+        step_type:
+          type: string
+          description: 运行节点类型。
+          example: wait
+          enum:
+          - wait
+        execution_scope:
+          type: string
+          description: 运行节点所属流程。
+          example: main
+          enum:
+          - main
+          - finally
+        parent_run_step_id:
+          type: integer
+          description: 运行父节点 ID；查询仅返回根节点，因此为 null；完整层级由快照恢复。
+          example: null
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+      required:
+      - id
+      - step_id
+      - position
+      - status
+      - request_id
+      - started_at
+      - finished_at
+      - duration_ms
+      - error_code
+      - error_message
+      - step_type
+      - execution_scope
+      - parent_run_step_id
+      example:
+        id: 1
+        step_id: 1
+        position: 10
+        status: pending
+        request_id: null
+        started_at: '2026-10-13T07:00:00Z'
+        finished_at: '2026-10-13T07:00:00Z'
+        duration_ms: null
+        error_code: null
+        error_message: null
+        step_type: wait
+        execution_scope: main
+        parent_run_step_id: null
+      additionalProperties: false
+    ParallelRunStep:
+      type: object
+      description: 仅返回 parallel 外 REST、wait、compute 及 parallel 父节点；并发子节点运行结果不展开。成功由 HTTP 或配置断言判定，参数独立赋值且缺失时为 null；parallel 耗时为包含排队、等待及收尾的整体墙钟耗时。
+      properties:
+        failed_child_runId:
+          type: string
+          nullable: true
+          description: 首个失败并发子步骤的日志 runId。
+        child_error_message:
+          type: string
+          nullable: true
+          description: 首个失败并发子步骤的阶段、异常类型及安全堆栈。
+        runId:
+          type: string
+          format: uuid
+          description: 本次步骤运行的全局唯一标识，与日志 runId 一致；不同于任务级 run_id。
+        id:
+          type: integer
+          description: 运行步骤 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        step_id:
+          type: integer
+          description: 快照中的任务步骤稳定 ID
+          example: 1
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        position:
+          type: integer
+          description: 同一 scope、同一父节点内的兄弟排序值。
+          example: 10
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        status:
+          type: string
+          description: 步骤状态
+          example: pending
+          enum:
+          - pending
+          - running
+          - succeeded
+          - failed
+          - skipped
+          - blocked
+        request_id:
+          type: integer
+          description: wait/parallel 不创建请求记录，恒为 null。
+          example: null
+          format: int32
+          nullable: true
+          minimum: 1
+          enum:
+          - null
+        started_at:
+          type: string
+          description: 开始时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          description: 结束时间
+          example: '2026-10-13T07:00:00Z'
+          format: date-time
+          nullable: true
+        duration_ms:
+          type: integer
+          description: 耗时毫秒，未结束为 null
+          example: null
+          format: int64
+          nullable: true
+          minimum: 0
+        error_code:
+          type: string
+          description: 错误分类；断言返回 False 为 ASSERTION_FAILED，执行异常为 ASSERTION_EXECUTION_ERROR，非布尔返回值为 ASSERTION_RETURN_TYPE_ERROR；服务重启遗留运行标记
+            EXECUTION_INTERRUPTED
+          example: null
+          nullable: true
+        error_message:
+          type: string
+          description: 脱敏错误说明
+          example: null
+          nullable: true
+        step_type:
+          type: string
+          description: 运行节点类型。
+          example: parallel
+          enum:
+          - parallel
+        execution_scope:
+          type: string
+          description: 运行节点所属流程。
+          example: main
+          enum:
+          - main
+        parent_run_step_id:
+          type: integer
+          description: 运行父节点 ID；查询仅返回根节点，因此为 null；完整层级由快照恢复。
+          example: null
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+        parallel_stats:
+          description: 累计汇总；不返回逐请求响应、状态码、头体、耗时或错误详情。
+          example: *id003
+          allOf:
+          - $ref: '#/components/schemas/ParallelStats'
+        failed_child_step_id:
+          type: integer
+          description: 按 position 最小的失败子节点选择的快照步骤 ID；无失败为 null。
+          example: null
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+        child_error_code:
+          type: string
+          description: 所选失败子节点的原始错误分类，无失败为 null。
+          example: null
+          nullable: true
+      required:
+      - id
+      - step_id
+      - position
+      - status
+      - request_id
+      - started_at
+      - finished_at
+      - duration_ms
+      - error_code
+      - error_message
+      - parallel_stats
+      - failed_child_step_id
+      - child_error_code
+      - step_type
+      - execution_scope
+      - parent_run_step_id
+      example:
+        id: 1
+        step_id: 1
+        position: 10
+        status: pending
+        request_id: null
+        started_at: '2026-10-13T07:00:00Z'
+        finished_at: '2026-10-13T07:00:00Z'
+        duration_ms: null
+        error_code: null
+        error_message: null
+        parallel_stats: *id003
+        failed_child_step_id: null
+        child_error_code: null
+        step_type: parallel
+        execution_scope: main
+        parent_run_step_id: null
+      additionalProperties: false
+    NodeCounts:
+      type: object
+      description: 按节点最终状态分类的计数。
+      properties:
+        blocked:
+          type: integer
+          description: 前提不足而阻塞的节点数。
+          minimum: 0
+          default: 0
+        total:
+          type: integer
+          description: 节点总数。
+          example: 0
+          minimum: 0
+        pending:
+          type: integer
+          description: 未启动节点数。
+          example: 0
+          minimum: 0
+        running:
+          type: integer
+          description: 运行中节点数。
+          example: 0
+          minimum: 0
+        succeeded:
+          type: integer
+          description: 成功节点数。
+          example: 0
+          minimum: 0
+        failed:
+          type: integer
+          description: 失败节点数。
+          example: 0
+          minimum: 0
+        skipped:
+          type: integer
+          description: 跳过节点数。
+          example: 0
+          minimum: 0
+      required:
+      - total
+      - pending
+      - running
+      - succeeded
+      - failed
+      - skipped
+      additionalProperties: false
+      example:
+        total: 0
+        pending: 0
+        running: 0
+        succeeded: 0
+        failed: 0
+        skipped: 0
   parameters:
     ProjectId:
       name: project_id
@@ -1938,4 +3396,4 @@ tags:
 - name: 任务管理
   description: 任务配置、步骤排序、参数绑定及删除
 - name: 任务运行
-  description: 顺序执行、运行历史及脱敏请求详情
+  description: 任务执行、阶段、并发统计及普通 REST 请求详情

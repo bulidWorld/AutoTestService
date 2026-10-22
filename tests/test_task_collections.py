@@ -47,7 +47,7 @@ def wait_collection(api, url):
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         result = checked(api.get(url), "RunDetail")
-        if result["status"] in {"succeeded", "failed"}:
+        if result["status"] in {"succeeded", "failed", "blocked"}:
             return result
         time.sleep(0.02)
     pytest.fail("collection did not finish")
@@ -75,6 +75,10 @@ def task_body(task):
             k: copy.deepcopy(s[k])
             for k in [
                 "id",
+                "step_type",
+                "execution_scope",
+                "position",
+                "headers",
                 "interface_id",
                 "file_id",
                 "version",
@@ -126,9 +130,8 @@ def test_collection_contract_examples_and_static_dependencies():
             "rest_source": {"step_id": 1, "extract_expression": "data.b"},
         }
     ]
-    config["steps"][0]["bindings"] = [
+    config["steps"][0]["headers"] = [
         {
-            "location": "header",
             "name": "X-Token",
             "binding": {"kind": "global", "parameter_name": "token"},
         }
@@ -323,11 +326,10 @@ def test_inherited_parameters_read_before_current_response_and_types(api, server
         }
     ]
     body["steps"][0]["assertion_code"] = (
-        'def assert_response(responseBody, globalParam):\n    return globalParam["token"] == "secret"'
+        'def assert_response(responseBody, globalParam, statusCode, headers):\n    return globalParam["token"] == "secret"'
     )
-    body["steps"][0]["bindings"] = [
+    body["steps"][0]["headers"] = [
         {
-            "location": "header",
             "name": "X-Token",
             "binding": {"kind": "global", "parameter_name": "token"},
         }

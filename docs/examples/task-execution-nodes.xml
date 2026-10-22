@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 先在同一项目导入下列接口。POST /validate 必须声明 application/json 请求体并返回 JSON。 -->
+<task name="并发与异常请求测试">
+  <parameters>
+    <parameter type="fixed"><name>client</name><value>demo</value></parameter>
+  </parameters>
+  <taskStep order="10">
+    <rest method="POST" path="/resources">
+      <extractParam valueType="integer"><name>resourceId</name><value>data.id</value></extractParam>
+    </rest>
+  </taskStep>
+  <taskStep order="20"><wait milliseconds="1000"/></taskStep>
+  <taskStep order="30">
+    <parallel maxConcurrency="2">
+      <taskStep order="1">
+        <rest method="GET" path="/resources/{id}">
+          <header><name>X-Client</name><value>{client}</value></header>
+          <pathParams><kv><key>id</key><parameter>resourceId</parameter></kv></pathParams>
+        </rest>
+      </taskStep>
+      <taskStep order="2">
+        <rest method="POST" path="/validate">
+          <rawBody><![CDATA[{"name":]]></rawBody>
+          <assertionCode><![CDATA[
+def assert_response(responseBody, globalParam, statusCode, headers):
+    return statusCode == 400 and responseBody["code"] == "INVALID_JSON"
+]]></assertionCode>
+        </rest>
+      </taskStep>
+    </parallel>
+  </taskStep>
+  <finally>
+    <taskStep order="10">
+      <rest method="DELETE" path="/resources/{id}">
+        <pathParams><kv><key>id</key><parameter>resourceId</parameter></kv></pathParams>
+      </rest>
+    </taskStep>
+    <taskStep order="20">
+      <rest method="POST" path="/test-session/close">
+        <extractParam valueType="boolean"><name>sessionClosed</name><value>data.closed</value></extractParam>
+      </rest>
+    </taskStep>
+  </finally>
+</task>

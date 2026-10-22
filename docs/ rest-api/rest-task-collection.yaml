@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: AutoTestService Task Collection API
   version: 0.1.0
-  description: 项目级多任务组管理、批次执行、共享参数与运行查询契约。默认应用加载并显式绑定业务实现。
+  description: 项目级多任务组管理、批次执行、共享参数与运行查询契约。默认应用加载并显式绑定业务实现。 成员复用统一任务执行树；单层 parallel 与项目级批次分别调度，共享服务级八个 HTTP 槽位，最多八个活动任务。
 paths:
   /api/v1/projects/{project_id}/task-collections:
     get:
@@ -223,9 +223,9 @@ paths:
       tags:
       - 任务组
       summary: 运行任务组
-      description: 运行完整成员任务；先校验非空、全部配置及批次参数依赖；事务按项目、任务组、任务 ID 升序加锁，预建组运行、所有 task_runs
-        和成员结果。所有成员从接受起至组运行终止均被预约，与单任务及其他任务组运行互斥；冲突整体回滚。批次按 position 递增，同批并发并等待屏障；同批读取同一共享上下文快照，按
-        task_id 升序合并成功任务写集，同名后写覆盖并记录 ERROR；失败批次不提交任何写集，后续批次 skipped。详见数据库设计文档。
+      description: 执行成员完整任务树；启动先校验 main/finally、并发屏障及严格前序批次输入依赖，不允许同批互读或并发兄弟互读。按项目 → 任务组 → 任务 ID 升序加锁，预建组运行、成员运行及快照。成员 primary_error
+        持久化或 cleanup_status 首次失败即停止本批尚未启动成员；已启动成员继续主流程和全部清理，全部达到终态后才判定批次。仅主流程与清理全成功才允许按 task_id 升序合并输出，任一失败整批不发布且跳过后续批次；清理 REST 可提取参数，成员及批次最终成功后，与其他已发布参数一并合并并按现有规则记录覆盖审计。成员及独立任务、parallel
+        和 finally 共享服务级八个 HTTP 槽位，最多八个活动任务。活动预约保留至所有已启动成员清理结束；服务中断不续跑、不补发清理。
       parameters:
       - $ref: '#/components/parameters/project_id'
       - $ref: '#/components/parameters/collection_id'
@@ -524,7 +524,7 @@ components:
         updated_at: '2026-10-20T10:00:00Z'
     RunMember:
       type: object
-      description: 成员运行状态；task_run_id 可使用既有任务运行详情和请求查询接口。
+      description: 成员主流程及全部 finally 清理完成后才达到终态，期间保持 running。主流程 primary_error 一经持久化即阻止本批未开始成员；已运行成员继续自身主流程与清理。task_run_id 可查询阶段、主错误、清理状态与并发统计。
       additionalProperties: false
       required:
       - task_id
@@ -550,13 +550,14 @@ components:
           maximum: 2147483647
         status:
           type: string
-          description: 成员状态。
+          description: 成员状态；清理结束前保持 running，主流程成功但清理失败也为 failed。
           enum:
           - pending
           - running
           - succeeded
           - failed
           - skipped
+          - blocked
       example: &id014
         task_id: 11
         position: 1
@@ -711,6 +712,7 @@ components:
           - running
           - succeeded
           - failed
+          - blocked
         created_at: &id009
           type: string
           description: 接受时间。
@@ -745,7 +747,7 @@ components:
         error_message: null
     RunDetail:
       type: object
-      description: 组运行详情；仅返回脱敏上下文，不直接暴露数据库快照。
+      description: 组运行详情；仅返回脱敏上下文，不直接暴露数据库快照。 成员清理阶段计为 running；等待全部已启动成员清理完毕再终结批次，清理失败使批次失败且不发布输出。
       additionalProperties: false
       required:
       - id
