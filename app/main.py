@@ -1,7 +1,7 @@
 import logging
 import time
 from contextlib import asynccontextmanager
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import uvicorn
 from fastapi import FastAPI
@@ -14,6 +14,7 @@ from app.config.logging import (
     configure_logging,
     request_context,
     request_id,
+    step_context,
 )
 from app.config.settings import absolute, load_settings
 
@@ -52,6 +53,13 @@ def create_app(contract_path=None):
     async def correlate_request(request, call_next):
         identifier = uuid4().hex
         token = request_id.set(identifier)
+        # Accept only UUIDs so an incoming correlation header cannot inject log content.
+        incoming_uuid = request.headers.get("X-Task-Step-Run-UUID")
+        try:
+            correlation = {"run_uuid": str(UUID(incoming_uuid))} if incoming_uuid else None
+        except ValueError:
+            correlation = None
+        step_token = step_context.set(correlation)
         started = time.monotonic()
         try:
             response = await call_next(request)
@@ -76,6 +84,7 @@ def create_app(contract_path=None):
             )
             return response
         finally:
+            step_context.reset(step_token)
             request_id.reset(token)
 
     return application

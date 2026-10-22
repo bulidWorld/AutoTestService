@@ -858,10 +858,10 @@ components:
       type: object
       description: compute 运行结果；不创建 HTTP 请求，表达式失败为 EXPRESSION_EVALUATION_ERROR，参数全部成功才原子发布。
       properties:
-        runId:
+        run_uuid:
           type: string
           format: uuid
-          description: 本次步骤运行的全局唯一标识，与日志 runId 一致；不同于任务级 run_id。
+          description: 节点本次运行的全局唯一日志关联标识，无外键；与同节点 REST、提取、断言日志一致。
         id:
           type: integer
           description: 运行步骤 ID
@@ -1130,7 +1130,7 @@ components:
         保存和运行前静态校验完整函数定义及入口签名，不执行断言；可 raise Blocked(...) 表示前提不足，终态为 blocked，仍尝试 finally；无效配置返回 400，issues 定位 steps 数组对应项的 assertion_code。
         使用标准 Python 函数入口 assert_response；不支持 def assert（assert 为保留字）。
         最多 16000 字符，顶层仅允许函数定义；支持同步 Python 计算、循环、条件与常用内置函数，不支持导入模块、类、私有属性、装饰器、类型注解和默认参数。
-        在独立进程中执行，CPU 上限 2 秒、总等待上限 3 秒、内存上限 256 MiB；超限按 ASSERTION_EXECUTION_ERROR 失败，不返回异常原文。
+        在独立进程中执行，CPU 上限 2 秒、总等待上限 3 秒、内存上限 256 MiB；超限按 ASSERTION_EXECUTION_ERROR 失败，返回异常类型及函数/行号堆栈，不返回异常原文、源码或局部变量。
       example: |
         def assert_response(responseBody, globalParam, statusCode, headers):
             return statusCode == 200 and responseBody.get("code") == 0 and responseBody.get("data", {}).get("id") == globalParam["expected_id"]
@@ -2856,10 +2856,10 @@ components:
       type: object
       description: 仅返回 parallel 外 REST、wait、compute 及 parallel 父节点；并发子节点运行结果不展开。成功由 HTTP 或配置断言判定，参数独立赋值且缺失时为 null；parallel 耗时为包含排队、等待及收尾的整体墙钟耗时。
       properties:
-        runId:
+        run_uuid:
           type: string
           format: uuid
-          description: 本次步骤运行的全局唯一标识，与日志 runId 一致；不同于任务级 run_id。
+          description: 节点本次运行的全局唯一日志关联标识，无外键；与同节点 REST、提取、断言日志一致。
         id:
           type: integer
           description: 运行步骤 ID
@@ -2970,10 +2970,10 @@ components:
       type: object
       description: 仅返回 parallel 外 REST、wait、compute 及 parallel 父节点；并发子节点运行结果不展开。成功由 HTTP 或配置断言判定，参数独立赋值且缺失时为 null；parallel 耗时为包含排队、等待及收尾的整体墙钟耗时。
       properties:
-        runId:
+        run_uuid:
           type: string
           format: uuid
-          description: 本次步骤运行的全局唯一标识，与日志 runId 一致；不同于任务级 run_id。
+          description: 节点本次运行的全局唯一日志关联标识，无外键；与同节点 REST、提取、断言日志一致。
         id:
           type: integer
           description: 运行步骤 ID
@@ -3099,18 +3099,19 @@ components:
       type: object
       description: 仅返回 parallel 外 REST、wait、compute 及 parallel 父节点；并发子节点运行结果不展开。成功由 HTTP 或配置断言判定，参数独立赋值且缺失时为 null；parallel 耗时为包含排队、等待及收尾的整体墙钟耗时。
       properties:
-        failed_child_runId:
+        failed_child_run_uuid:
           type: string
+          format: uuid
           nullable: true
-          description: 首个失败并发子步骤的日志 runId。
+          description: 首个失败子节点的日志关联 UUID。
+        run_uuid:
+          type: string
+          format: uuid
+          description: 节点本次运行的全局唯一日志关联标识，无外键；与同节点 REST、提取、断言日志一致。
         child_error_message:
           type: string
           nullable: true
           description: 首个失败并发子步骤的阶段、异常类型及安全堆栈。
-        runId:
-          type: string
-          format: uuid
-          description: 本次步骤运行的全局唯一标识，与日志 runId 一致；不同于任务级 run_id。
         id:
           type: integer
           description: 运行步骤 ID

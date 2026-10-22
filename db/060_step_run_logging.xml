@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<database name="auto_test_service" dialect="postgresql">
+  <statements>
+    <statement id="step-run-log-uuid-column">
+      <description>为新旧步骤运行生成独立 UUID，不修改原有主键或引用</description>
+      <sql>ALTER TABLE task_run_steps ADD COLUMN IF NOT EXISTS run_uuid uuid NOT NULL DEFAULT gen_random_uuid()</sql>
+    </statement>
+    <statement id="step-run-log-uuid-unique">
+      <sql>CREATE UNIQUE INDEX IF NOT EXISTS ux_task_run_steps_run_uuid ON task_run_steps(run_uuid)</sql>
+    </statement>
+  </statements>
+</database>

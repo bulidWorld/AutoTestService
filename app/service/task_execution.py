@@ -8,6 +8,7 @@ import logging
 import ssl
 import threading
 import time
+import traceback
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
@@ -19,8 +20,8 @@ from psycopg.types.json import Jsonb
 from app.config.logging import step_context
 from app.service.assertions import assertion_parameters, evaluate_assertion
 from app.service.errors import BusinessError
-from app.service.task_expressions import compute_values
 from app.service.task_config import TYPES, build_request, extract, scrub, sensitive_values
+from app.service.task_expressions import compute_values
 from app.service.task_nodes import parameter_sources, siblings
 from app.service.task_semantics import condition_action, wait_milliseconds
 
@@ -56,8 +57,13 @@ def request_http(request, timeout):
         body = (
             request["request_body"].encode("utf-8") if request["request_body"] is not None else None
         )
+        run_uuid = (step_context.get() or {}).get("run_uuid")
         for h in request["request_headers"]:
+            if run_uuid and h["name"].lower() == "x-task-step-run-uuid":
+                continue
             client.putheader(h["name"], h["value"])
+        if run_uuid:
+            client.putheader("X-Task-Step-Run-UUID", run_uuid)
         if body is not None:
             client.putheader("Content-Length", str(len(body)))
         client.endheaders(body)
@@ -140,8 +146,9 @@ def apply_assertion(step, response, values):
     for header in response.get("response_headers") or []:
         headers.setdefault(header["name"].lower(), []).append(header["value"])
     diagnostics = {}
-    error = evaluate_assertion(code, body, values, response.get("response_status"), headers,
-                               diagnostics=diagnostics)
+    error = evaluate_assertion(
+        code, body, values, response.get("response_status"), headers, diagnostics=diagnostics
+    )
     messages = {
         "ASSERTION_FAILED": "业务断言未通过",
         "ASSERTION_EXECUTION_ERROR": "业务断言执行异常或超过资源限制",
@@ -198,7 +205,10 @@ def extract_values(config, step, response):
             )
         except BusinessError as exc:
             writes[p["name"]] = None
-            LOGGER.warning("参数提取失败，已赋 null", extra={"stage": "extraction", "code": exc.payload["code"], "detail": p["name"]})
+            LOGGER.warning(
+                "参数提取失败，已赋 null",
+                extra={"stage": "extraction", "code": exc.payload["code"], "detail": p["name"]},
+            )
     return writes
 
 
@@ -227,7 +237,9 @@ def preview(config, name):
     }
 
     def leaf(step, inputs, abort=None):
-        token = step_context.set({"runId": str(uuid4()), "task_step_id": step["id"], "operation": "previewRestParameter"})
+        token = step_context.set(
+            {"run_uuid": str(uuid4()), "step_id": step["id"], "operation": "previewRestParameter"}
+        )
         try:
             LOGGER.info("预览步骤开始", extra={"stage": "step"})
             return preview_leaf(step, inputs, abort)
@@ -457,10 +469,18 @@ class RunExecutor:
 
     def leaf(self, config, step, values, abort=None):
         with connection() as db:
-            row = db.execute("SELECT step_run_id FROM task_run_steps WHERE run_id=%s AND step_id=%s",
-                             (self.rid, step["id"])).fetchone()
-        token = step_context.set({"runId": row["step_run_id"], "task_run_id": self.rid,
-                                  "task_step_id": step["id"]})
+            row = db.execute(
+                "SELECT id,run_uuid FROM task_run_steps WHERE run_id=%s AND step_id=%s",
+                (self.rid, step["id"]),
+            ).fetchone()
+        token = step_context.set(
+            {
+                "run_uuid": str(row["run_uuid"]),
+                "run_id": self.rid,
+                "run_step_id": row["id"],
+                "step_id": step["id"],
+            }
+        )
         try:
             LOGGER.info("步骤开始", extra={"stage": "step"})
             return self._leaf(config, step, values, abort)
@@ -549,13 +569,25 @@ class RunExecutor:
                 stage = "rest"
                 LOGGER.info("发起 REST 请求", extra={"stage": stage})
                 response = request_http(request, config.get("timeout_seconds", 30))
-                LOGGER.info("REST 请求完成", extra={"stage": stage, "status": response.get("response_status"), "code": response.get("error_code")})
+                LOGGER.info(
+                    "REST 请求完成",
+                    extra={
+                        "stage": stage,
+                        "status": response.get("response_status"),
+                        "code": response.get("error_code"),
+                    },
+                )
                 duration = request["duration_ms"]
                 stage = "extraction"
                 LOGGER.info("提取全局参数", extra={"stage": stage})
                 writes = extract_values(config, step, response)
-                stage = "assertion"
-                LOGGER.info("执行业务断言", extra={"stage": stage})
+                stage = "rest"
+                if step.get("assertion_code") and response["error_code"] in (
+                    None,
+                    "HTTP_STATUS_ERROR",
+                ):
+                    stage = "assertion"
+                    LOGGER.info("执行业务断言", extra={"stage": stage})
                 response = apply_assertion(step, response, copy.deepcopy(values))
                 if response["error_code"]:
                     raise BusinessError(422, response["error_code"], response["error_message"])
@@ -565,7 +597,7 @@ class RunExecutor:
             else:
                 stage = "wait"
                 wait_until(wait_milliseconds(step, values), self.stop)
-        except Exception as exc:  # noqa: BLE001 - persist a safe terminal result on every path
+        except Exception as exc:
             code, message = (
                 (exc.payload["code"], exc.payload["detail"])
                 if isinstance(exc, BusinessError)
@@ -573,10 +605,17 @@ class RunExecutor:
             )
             if step["execution_scope"] == "finally" and code == "PARAMETER_NOT_AVAILABLE":
                 code, message = "CLEANUP_INPUT_UNAVAILABLE", "清理所需参数尚未发布，未发送请求"
-            context = step_context.get()
-            message = f"步骤 {step['id']} · runId={context.get('runId', '-')} · 阶段={stage}\n{message}"
-            LOGGER.error(message, extra={"stage": stage, "code": code},
-                         exc_info=not isinstance(exc, BusinessError))
+            if not isinstance(exc, BusinessError):
+                message += ": " + type(exc).__name__
+                for frame in traceback.extract_tb(exc.__traceback__)[-20:]:
+                    message += f"\n  at {frame.name} ({frame.filename}:{frame.lineno})"
+            context = step_context.get() or {}
+            message = f"步骤 {step['id']} · run_uuid={context.get('run_uuid', '-')} · run_id={self.rid} · run_step_id={context.get('run_step_id', '-')} · 阶段={stage}\n{message}"
+            LOGGER.error(
+                message,
+                extra={"stage": stage, "code": code},
+                exc_info=not isinstance(exc, BusinessError),
+            )
             error = (code, message)
             if abort:
                 abort.set()
@@ -649,10 +688,18 @@ class RunExecutor:
 
     def parallel(self, config, step):
         with connection() as db:
-            row = db.execute("SELECT step_run_id FROM task_run_steps WHERE run_id=%s AND step_id=%s",
-                             (self.rid, step["id"])).fetchone()
-        token = step_context.set({"runId": row["step_run_id"], "task_run_id": self.rid,
-                                  "task_step_id": step["id"]})
+            row = db.execute(
+                "SELECT id,run_uuid FROM task_run_steps WHERE run_id=%s AND step_id=%s",
+                (self.rid, step["id"]),
+            ).fetchone()
+        token = step_context.set(
+            {
+                "run_uuid": str(row["run_uuid"]),
+                "run_id": self.rid,
+                "run_step_id": row["id"],
+                "step_id": step["id"],
+            }
+        )
         try:
             LOGGER.info("并发步骤开始", extra={"stage": "parallel"})
             result = self._parallel(config, step)

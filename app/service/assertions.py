@@ -149,6 +149,7 @@ if outcome in ("blocked",):
 
 def evaluate_assertion(code, body, values, status_code, headers, diagnostics=None):
     """Return only an error code; assertion exceptions never expose response secrets."""
+
     def detail(reason, **fields):
         if diagnostics is not None:
             diagnostics.update(reason=reason, **fields)

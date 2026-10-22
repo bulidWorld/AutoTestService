@@ -698,7 +698,6 @@ def getTaskRun(repository, path, query, body, upload):
         if result["parent_run_step_id"] is not None:
             continue
         result.pop("run_id", None)
-        result["runId"] = result.pop("step_run_id")
         if result["step_type"] != "parallel":
             result.pop("parallel_stats", None)
         else:
@@ -713,8 +712,8 @@ def getTaskRun(repository, path, query, body, upload):
             )
             result["failed_child_step_id"] = failures[0]["step_id"] if failures else None
             result["child_error_code"] = failures[0]["error_code"] if failures else None
-            result["failed_child_runId"] = failures[0]["step_run_id"] if failures else None
             result["child_error_message"] = failures[0]["error_message"] if failures else None
+            result["failed_child_run_uuid"] = failures[0]["run_uuid"] if failures else None
         visible.append(result)
     return {
         "run": public_run(row),
@@ -749,8 +748,6 @@ def safe_request(repository, row, config):
             (row["run_id"],),
         )
     }
-    node = repository.one("SELECT step_run_id FROM task_run_steps WHERE id=%s", (row["run_step_id"],))
-    row["runId"] = node["step_run_id"] if node else None
     config = run_secrets(repository, config, row["run_id"])
     secrets = sensitive_values(config, values)
     for key in ["request_headers", "response_headers"]:

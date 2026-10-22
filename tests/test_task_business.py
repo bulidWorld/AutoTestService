@@ -8,7 +8,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import psycopg
 import pytest
@@ -1192,6 +1192,16 @@ def test_assertion_run_verdict_and_extraction_order(api, server, path, statement
     )
     requests = schema_check(api.get(t + f"/runs/{rid}/requests"), "RequestPage")["items"]
     assert requests[0]["error_code"] == error
+    step_run_id = result["steps"][0]["id"]
+    assert isinstance(step_run_id, int)
+    assert UUID(result["steps"][0]["run_uuid"]).version == 4
+    assert requests[0]["run_step_id"] == step_run_id
+    if error:
+        assert f"run_id={rid}" in result["steps"][0]["error_message"]
+        assert f"run_step_id={step_run_id}" in result["steps"][0]["error_message"]
+    if error == "ASSERTION_EXECUTION_ERROR":
+        assert "ValueError" in result["steps"][0]["error_message"]
+        assert "<assertion>:2" in result["steps"][0]["error_message"]
     assert len(server["calls"]) == (1 if error else 2)
     assert result["global_parameters"][0]["status"] == "succeeded"
     assert result["global_parameters"][0]["published"]

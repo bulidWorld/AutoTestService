@@ -23,9 +23,9 @@
     <table name="yaml_files" comment="项目内的逻辑 YAML 文件；更新保留文件 ID，当前版本指向不可变历史版本" if-not-exists="true">
       <columns>
         <column name="id" type="integer" nullable="false" comment="逻辑文件唯一 ID，数据库自增整数" identity="true"/>
-        <column name="project_id" type="integer" nullable="false" comment="所属项目 ID"/>
+        <column name="project_id" type="integer" nullable="false" comment="所属项目 ID" ref-table="projects" ref-col="id"/>
         <column name="name" type="varchar(120)" nullable="false" comment="项目内唯一的逻辑文件名" collation="&quot;C&quot;"/>
-        <column name="current_version" type="integer" nullable="false" comment="当前版本号，从 1 开始；与版本记录在同一事务写入" default="1"/>
+        <column name="current_version" type="integer" nullable="false" comment="当前版本号，从 1 开始；与版本记录在同一事务写入" default="1" ref-table="yaml_versions" ref-col="version"/>
         <column name="created_at" type="timestamptz" nullable="false" comment="首次导入时间" default="now()"/>
         <column name="updated_at" type="timestamptz" nullable="false" comment="最近一次成功更新的时间，由业务显式更新" default="now()"/>
       </columns>
@@ -43,7 +43,7 @@
     </table>
     <table name="yaml_versions" comment="不可变 YAML 版本，原始内容和解析结果一次性保存；禁止 UPDATE，删除逻辑文件时由程序清理" if-not-exists="true">
       <columns>
-        <column name="file_id" type="integer" nullable="false" comment="所属逻辑文件 ID"/>
+        <column name="file_id" type="integer" nullable="false" comment="所属逻辑文件 ID" ref-table="yaml_files" ref-col="id"/>
         <column name="version" type="integer" nullable="false" comment="文件内递增版本号，与 file_id 组成主键"/>
         <column name="filename" type="text" nullable="false" comment="上传文件名，不含目录路径"/>
         <column name="imported_at" type="timestamptz" nullable="false" comment="成功导入时间" default="now()"/>
@@ -61,8 +61,8 @@
     <table name="api_interfaces" comment="版本内的接口定义，ID 不跨版本复用；接口详情均来自导入解析，禁止 UPDATE" if-not-exists="true">
       <columns>
         <column name="id" type="integer" nullable="false" comment="接口记录 ID，数据库自增整数" identity="true"/>
-        <column name="file_id" type="integer" nullable="false" comment="所属逻辑文件 ID"/>
-        <column name="version" type="integer" nullable="false" comment="所属文件版本号"/>
+        <column name="file_id" type="integer" nullable="false" comment="所属逻辑文件 ID" ref-table="yaml_files" ref-col="id"/>
+        <column name="version" type="integer" nullable="false" comment="所属文件版本号" ref-table="yaml_versions" ref-col="version"/>
         <column name="method" type="varchar(8)" nullable="false" comment="大写 HTTP 方法"/>
         <column name="path" type="text" nullable="false" comment="源接口路径"/>
         <column name="operation_id" type="text" nullable="false" comment="源 operationId，缺省为空字符串" default="''"/>

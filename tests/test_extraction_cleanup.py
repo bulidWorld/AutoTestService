@@ -3,6 +3,7 @@
 import copy
 import json
 from unittest.mock import MagicMock, Mock
+from uuid import uuid4
 
 import pytest
 
@@ -100,7 +101,7 @@ def runtime(monkeypatch):
     db.__exit__.return_value = False
 
     def execute(sql, arguments=()):
-        row = {"id": 100, "status": "running", "config_snapshot": task}
+        row = {"id": 100, "run_uuid": uuid4(), "status": "running", "config_snapshot": task}
         if sql.startswith("SELECT id,parallel_stats"):
             return Mock(fetchall=list)
         return Mock(fetchone=lambda: row)

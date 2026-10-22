@@ -402,10 +402,13 @@ rg '响应头中的请求ID' /var/service/log/auto-test-service/*.log
 
 ### 步骤运行诊断
 
-每个持久化步骤运行具有 UUID `runId`，运行详情的 `steps[].runId` 与 JSON 日志 `runId` 一致；
-日志另含 `task_run_id`、`task_step_id`、`stage`。REST 请求、参数提取、断言及终态共用步骤 runId，
-并发子步骤拥有独立 runId。参数预览也生成步骤 runId（仅在本次预览日志中使用）。
-失败的 `error_message` 包含步骤 ID、runId、阶段及断言异常类型、函数/行号堆栈；
+`task_run_steps.run_uuid` 为每个节点的每次运行生成独立 UUID，非空、有唯一索引、无外键。
+现有 `id`、`run_id`、`step_id` 及其引用保持不变。运行详情的 `steps[].run_uuid` 与 JSON 日志
+`run_uuid` 一致，日志同时保留 `run_id`、`step_id`、`run_step_id`、`stage`。
+REST 请求、参数提取、断言及终态共用节点 UUID，并发子节点上下文相互隔离。
+REST 请求自动携带 `X-Task-Step-Run-UUID` 请求头（覆盖同名自定义头）；被调用的本服务会校验并将其写入业务和访问日志，便于关联接口校验失败等日志。其他服务需自行接入该请求头。
+预览节点也生成临时 UUID（仅用于本次预览日志）。
+失败的 `error_message` 包含节点 ID、run_uuid、run_id、run_step_id、阶段及断言异常类型、函数/行号堆栈；
 不记录异常原文、源码行或局部变量。超时与子进程异常退出分别提示，退出原因无法精确区分时明确说明。
-并发父节点提供 `failed_child_runId`、`child_error_message`，请求详情也带 `runId`。
-升级时执行 `bash scripts/db_sync.sh` 并重启服务。旧运行可补齐标识，但不会补生成历史执行日志。
+并发父节点提供 `failed_child_step_id`、`failed_child_run_uuid` 和 `child_error_message`。
+升级执行 `bash scripts/db_sync.sh` 并重启服务。迁移会为历史步骤补齐 UUID，但不会补生成历史日志。
