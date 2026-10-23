@@ -7,6 +7,7 @@ from app.service.errors import BusinessError, invalid
 
 MAX_WAIT_MS = 30 * 24 * 60 * 60 * 1000
 OPTION_KEYS = {
+    "sql",
     "auth",
     "condition",
     "assignments",
@@ -22,6 +23,9 @@ def validate_options(step, declarations):
     options = step.get("options") or {}
     if not isinstance(options, dict) or options.keys() - OPTION_KEYS:
         invalid("options 含未知执行策略", "steps.options")
+    from app.service.task_sql import validate_sql
+
+    validate_sql(step)
     kind = step["step_type"]
     if kind != "rest" and options.keys() & {"auth", "assignments", "raw_path", "raw_query"}:
         invalid("鉴权、参数更新和原始路径查询仅适用于 REST", "steps.options")

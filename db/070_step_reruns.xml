@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<database name="auto_test_service" dialect="postgresql">
+  <tables>
+    <table name="task_step_reruns" comment="单步骤独立重复执行；不修改源运行统计和上下文，不设置外键或 CHECK；业务事务保证归属和状态" if-not-exists="true">
+      <columns>
+        <column name="id" type="integer" nullable="false" identity="true" comment="重复执行记录主键"/>
+        <column name="project_id" type="integer" ref-table="projects" ref-col="id" nullable="false" comment="项目 ID，服务校验源运行归属"/>
+        <column name="task_id" type="integer" ref-table="tasks" ref-col="id" nullable="false" comment="任务 ID，用于活动执行互斥"/>
+        <column name="source_run_id" type="integer" ref-table="task_runs" ref-col="id" nullable="false" comment="源任务运行 ID"/>
+        <column name="source_run_step_id" type="integer" ref-table="task_run_steps" ref-col="id" nullable="false" comment="源步骤运行 ID，不是配置 step_id；始终指向原运行，不支持 rerun 链"/>
+        <column name="run_uuid" type="uuid" nullable="false" default="gen_random_uuid()" comment="本次独立执行的日志 UUID"/>
+        <column name="step_type" type="varchar(16)" nullable="false" comment="rest/wait/compute，不支持 parallel 父节点"/>
+        <column name="status" type="varchar(16)" nullable="false" default="'queued'" comment="queued/running/succeeded/failed/blocked"/>
+        <column name="input_snapshot" type="jsonb" nullable="false" comment="接受事务复制源 input_snapshot，不可修改；含原始敏感实际值，不直接暴露至 API 或日志"/>
+        <column name="output_parameters" type="jsonb" nullable="false" default="'{}'::jsonb" comment="本次参数输出，仅本记录保存，不回写原运行、共享上下文或任务组"/>
+        <column name="request_result" type="jsonb" nullable="true" comment="parallel 外 REST 的脱敏响应结果，结构见 StepRerun.request_result；其他类型和 parallel 内叶子必须 NULL，不创建原 task_requests"/>
+        <column name="created_at" type="timestamptz" nullable="false" default="CURRENT_TIMESTAMP" comment="接受时间"/>
+        <column name="started_at" type="timestamptz" nullable="true" comment="开始执行时间"/>
+        <column name="finished_at" type="timestamptz" nullable="true" comment="结束时间"/>
+        <column name="duration_ms" type="bigint" nullable="true" comment="墙钟耗时；parallel 内叶子不保存逐请求耗时，必须 NULL"/>
+        <column name="error_code" type="varchar(64)" nullable="true" comment="失败分类"/>
+        <column name="error_message" type="text" nullable="true" comment="脱敏失败摘要，不包含输入快照"/>
+      </columns>
+      <constraints>
+        <primary-key name="pk_task_step_reruns" columns="id"/>
+        <unique name="ux_task_step_reruns_uuid" columns="run_uuid"/>
+      </constraints>
+      <indexes>
+        <index name="ix_task_step_reruns_source_created" if-not-exists="true">
+          <column name="source_run_step_id"/><column name="created_at" order="DESC"/><column name="id" order="DESC"/>
+        </index>
+        <index name="ix_task_step_reruns_task_status" if-not-exists="true">
+          <column name="task_id"/><column name="status"/>
+        </index>
+      </indexes>
+    </table>
+  </tables>
+  <statements>
+    <statement id="step-rerun-input-snapshot">
+      <description>新增步骤执行前实际输入快照；历史记录保持 NULL，不使用当前配置或最终全局参数回填</description>
+      <sql>ALTER TABLE task_run_steps ADD COLUMN IF NOT EXISTS input_snapshot jsonb</sql>
+    </statement>
+  </statements>
+</database>

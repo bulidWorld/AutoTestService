@@ -208,8 +208,9 @@ components:
         sensitive: false
       additionalProperties: false
     GlobalParameterInput:
-      description: 全局参数支持 fixed/rest/expression；固定值先初始化，动态值在 REST/compute 步骤实际执行时赋值。
+      description: 全局参数支持 fixed/function/rest/expression；固定值先初始化，动态值在 REST/compute 步骤实际执行时赋值。
       oneOf:
+      - $ref: '#/components/schemas/FunctionParameterInput'
       - $ref: '#/components/schemas/ExpressionParameterInput'
       - $ref: '#/components/schemas/FixedParameterInput'
       - $ref: '#/components/schemas/RestParameterInput'
@@ -255,6 +256,7 @@ components:
           example: rest
           enum:
           - fixed
+          - function
           - rest
           - expression
         value:
@@ -319,8 +321,9 @@ components:
         id: 1
       additionalProperties: false
     GlobalParameterEdit:
-      description: 全局参数支持 fixed/rest/expression；固定值先初始化，动态值在 REST/compute 步骤实际执行时赋值。
+      description: 全局参数支持 fixed/function/rest/expression；固定值先初始化，动态值在 REST/compute 步骤实际执行时赋值。
       oneOf:
+      - $ref: '#/components/schemas/FunctionParameterInput'
       - $ref: '#/components/schemas/ExpressionParameterInput'
       - $ref: '#/components/schemas/FixedParameterEdit'
       - $ref: '#/components/schemas/RestParameterInput'
@@ -588,6 +591,45 @@ components:
         step_id: 1
         extract_expression: data.a
       additionalProperties: false
+    FunctionParameterInput:
+      type: object
+      description: 显式内置函数参数：每次 task 初始化执行一次，多个 step 共享结果；保存、复制及排队不求值。fixed 始终保留字面量。
+      properties:
+        name:
+          type: string
+          description: 参数名称
+          example: token
+          minLength: 1
+          maxLength: 120
+        value_type:
+          type: string
+          enum:
+          - string
+        sensitive:
+          type: boolean
+          description: 页面和日志脱敏标记
+          example: true
+          default: false
+        source_type:
+          type: string
+          enum:
+          - function
+        value:
+          type: string
+          enum:
+          - generateUUID()
+          description: 无参白名单函数，生成 UUID v4 字符串；不执行任意代码。
+      required:
+      - name
+      - value_type
+      - value
+      - source_type
+      example:
+        name: task_uuid
+        source_type: function
+        value_type: string
+        value: generateUUID()
+      additionalProperties: false
     FixedParameterInput:
       type: object
       description: 固定参数，新建必须提供 value。未指定 source_type 时兼容固定参数。
@@ -786,6 +828,7 @@ components:
           example: rest
           enum:
           - fixed
+          - function
           - rest
           - expression
         value_type:

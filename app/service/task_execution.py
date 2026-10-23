@@ -21,9 +21,10 @@ from app.config.logging import step_context
 from app.service.assertions import assertion_parameters, evaluate_assertion
 from app.service.errors import BusinessError
 from app.service.task_config import TYPES, build_request, extract, scrub, sensitive_values
-from app.service.task_expressions import compute_values
+from app.service.task_expressions import compute_values, validate_function_parameter
 from app.service.task_nodes import parameter_sources, siblings
 from app.service.task_semantics import condition_action, wait_milliseconds
+from app.service.task_sql import execute_sql
 
 LOGGER = logging.getLogger(__name__)
 LEADER_KEY = 741930512
@@ -219,6 +220,14 @@ def check_inputs(config, step, values):
     return build_request(config, step, values=values)
 
 
+def initial_parameter_value(parameter):
+    """Resolve task-scoped built-ins once, without changing the saved declaration."""
+    if parameter["source_type"] == "function":
+        validate_function_parameter(parameter)
+        return str(uuid4())
+    return copy.deepcopy(parameter["value"])
+
+
 def preview(config, name):
     target = next((p for p in config["global_parameters"] if p["name"] == name), None)
     if not target or target["source_type"] not in {"rest", "expression"}:
@@ -231,9 +240,9 @@ def preview(config, name):
     ]["step_id"]
     target_scope = next(s["execution_scope"] for s in config["steps"] if s["id"] == target_id)
     values = {
-        p["name"]: copy.deepcopy(p["value"])
+        p["name"]: initial_parameter_value(p)
         for p in config["global_parameters"]
-        if p["source_type"] == "fixed"
+        if p["source_type"] in {"fixed", "function"}
     }
 
     def leaf(step, inputs, abort=None):
@@ -255,6 +264,13 @@ def preview(config, name):
             raise BusinessError(422, "PRECONDITION_BLOCKED", "节点前提不足，执行阻塞")
         if abort and abort.is_set():
             return {}, None
+        if step["step_type"] == "sql":
+            try:
+                return execute_sql(step), None
+            except Exception:
+                if abort:
+                    abort.set()
+                raise
         if step["step_type"] == "compute":
             try:
                 return compute_values(config, step, inputs), None
@@ -591,6 +607,9 @@ class RunExecutor:
                 response = apply_assertion(step, response, copy.deepcopy(values))
                 if response["error_code"]:
                     raise BusinessError(422, response["error_code"], response["error_message"])
+            elif step["step_type"] == "sql":
+                stage = "sql"
+                writes = execute_sql(step)
             elif step["step_type"] == "compute":
                 stage = "compute"
                 writes = compute_values(config, step, values)
@@ -812,7 +831,7 @@ class RunExecutor:
                     fresh = {
                         p["name"]
                         for p in config["global_parameters"]
-                        if p["source_type"] == "expression"
+                        if p["source_type"] in {"expression", "function"}
                     }
                     self.values = {
                         n: copy.deepcopy(p["value"]) for n, p in inherited.items() if n not in fresh
@@ -821,7 +840,7 @@ class RunExecutor:
             primary = None
             try:
                 for p in config["global_parameters"]:
-                    if p["source_type"] != "fixed":
+                    if p["source_type"] not in {"fixed", "function"}:
                         continue
                     if not TYPES[p["value_type"]](p.get("value")):
                         with connection() as db:
@@ -832,13 +851,14 @@ class RunExecutor:
                         raise BusinessError(
                             422, "PARAMETER_INITIALIZATION_FAILED", "固定参数初始化失败"
                         )
+                    value = initial_parameter_value(p)
                     with connection() as db:
                         self.check_active(db)
                         db.execute(
                             "UPDATE task_run_parameters SET status='succeeded',value=%s,published=true,started_at=now(),finished_at=now(),duration_ms=0 WHERE run_id=%s AND parameter_id=%s",
-                            (Jsonb(p["value"]), self.rid, p["id"]),
+                            (Jsonb(value), self.rid, p["id"]),
                         )
-                    self.values[p["name"]] = copy.deepcopy(p["value"])
+                    self.values[p["name"]] = value
                 for step in siblings(config):
                     if step["step_type"] == "parallel":
                         error = self.parallel(config, step)

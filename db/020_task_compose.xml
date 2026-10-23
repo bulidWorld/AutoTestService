@@ -33,10 +33,10 @@
         <column name="task_id" type="integer" comment="所属任务 ID" nullable="false" ref-table="tasks" ref-col="id"/>
         <column name="name" type="varchar(120)" comment="任务内唯一参数名" nullable="false"/>
         <column name="value_type" type="varchar(16)" comment="string/integer/number/boolean/object/array" nullable="false"/>
-        <column name="value" type="jsonb" comment="fixed 的 JSON 类型值；rest 必须为 SQL NULL，不缓存预览或上次运行值" nullable="true"/>
+        <column name="value" type="jsonb" comment="fixed 的 JSON 字面值或 function 的函数调用文本；rest 必须为 SQL NULL，不缓存预览或上次运行值" nullable="true"/>
         <column name="sensitive" type="boolean" comment="是否敏感" nullable="false" default="false"/>
         <column name="position" type="integer" comment="全局参数初始化顺序，从 1 连续递增；依赖仅允许引用前序参数" nullable="false"/>
-        <column name="source_type" type="varchar(16)" comment="参数来源 fixed/rest/expression；expression 在 compute 节点实际执行时求值" nullable="false" default="'fixed'"/>
+        <column name="source_type" type="varchar(16)" comment="参数来源 fixed/function/rest/expression；function 初始化执行白名单函数，expression 在 compute 节点实际执行时求值" nullable="false" default="'fixed'"/>
         <column name="rest_source" type="jsonb" comment="仅保存本任务 main REST 叶子的稳定 step_id 与 extract_expression；复制同时重映射来源与节点父引用；fixed 为 NULL" nullable="true"/>
         <column name="expression_source" type="jsonb" nullable="true" comment="expression 参数的 compute 节点来源 step_id；表达式定义保存在节点 options.expressions"/>
       </columns>
@@ -203,7 +203,7 @@
         <column name="parameter_id" type="integer" comment="快照中的任务参数稳定 ID" nullable="false" ref-table="task_parameters" ref-col="id"/>
         <column name="name" type="varchar(120)" comment="参数名称快照" nullable="false"/>
         <column name="position" type="integer" comment="初始化顺序" nullable="false"/>
-        <column name="source_type" type="varchar(16)" comment="参数来源 fixed/rest/expression；expression 在 compute 节点实际执行时求值" nullable="false"/>
+        <column name="source_type" type="varchar(16)" comment="参数来源 fixed/function/rest/expression；function 初始化执行白名单函数，expression 在 compute 节点实际执行时求值" nullable="false"/>
         <column name="value_type" type="varchar(16)" comment="预期数据类型" nullable="false"/>
         <column name="sensitive" type="boolean" comment="敏感标记" nullable="false"/>
         <column name="status" type="varchar(16)" comment="pending/running/succeeded/failed/skipped" nullable="false"/>

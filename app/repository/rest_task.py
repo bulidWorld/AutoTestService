@@ -348,7 +348,7 @@ def save(repository, path, body, creating=False):
             tid,
             p["name"],
             p["value_type"],
-            Jsonb(p["value"]) if p["source_type"] == "fixed" else None,
+            Jsonb(p["value"]) if p["source_type"] in {"fixed", "function"} else None,
             p["sensitive"],
             i + 1,
             p["source_type"],

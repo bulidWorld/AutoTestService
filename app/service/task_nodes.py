@@ -48,7 +48,7 @@ def validate_structure(task):
     for index, step in enumerate(steps):
         location = f"body.steps.{index}"
         kind, scope = step.get("step_type"), step.get("execution_scope")
-        if kind not in {"rest", "wait", "parallel", "compute"} or scope not in {"main", "finally"}:
+        if kind not in {"rest", "wait", "parallel", "compute", "sql"} or scope not in {"main", "finally"}:
             structure_error("必须指定合法 step_type 和 execution_scope", location)
         position = step.get("position")
         if type(position) is not int or not 1 <= position <= 2147483647:
@@ -70,7 +70,7 @@ def validate_structure(task):
                 or kind == "parallel"
             ):
                 structure_error(
-                    "父节点只能为本任务 main 根 parallel，子节点仅允许 main rest/wait/compute",
+                    "父节点只能为本任务 main 根 parallel，子节点仅允许 main rest/wait/compute/sql",
                     location,
                 )
         if kind == "parallel":
@@ -103,7 +103,7 @@ def parameter_sources(task):
     steps = {s["id"]: s for s in task["steps"]}
     sources = {}
     for parameter in task["global_parameters"]:
-        if parameter["source_type"] == "fixed":
+        if parameter["source_type"] in {"fixed", "function"}:
             continue
         if parameter["source_type"] == "expression":
             source = parameter.get("expression_source") or {}
@@ -113,7 +113,7 @@ def parameter_sources(task):
             sources.setdefault(step["id"], []).append(parameter)
             continue
         if parameter["source_type"] != "rest":
-            structure_error("参数来源须为 fixed/rest/expression", "source_type")
+            structure_error("参数来源须为 fixed/function/rest/expression", "source_type")
         source = parameter.get("rest_source") or {}
         if set(source) != {"step_id", "extract_expression"}:
             structure_error("REST 参数必须指定稳定步骤 ID 和提取表达式", "rest_source")

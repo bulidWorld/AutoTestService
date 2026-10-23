@@ -10,7 +10,11 @@ from jsonschema import Draft4Validator, Draft202012Validator
 
 from app.service.assertions import assertion_parameters, validate_assertion
 from app.service.errors import BusinessError, invalid
-from app.service.task_expressions import expression_parameters, validate_expressions
+from app.service.task_expressions import (
+    expression_parameters,
+    validate_expressions,
+    validate_function_parameter,
+)
 from app.service.task_semantics import auth_headers, validate_options
 
 TYPES = {
@@ -438,6 +442,8 @@ def validate_config(task, run=False, allow_collection_inputs=False):
             invalid("全局参数名称为空或重复", f"body.global_parameters.{i}.name")
         if p["source_type"] == "fixed" and not TYPES[p["value_type"]](p.get("value")):
             invalid("固定参数类型不匹配或缺少值", f"body.global_parameters.{i}.value")
+        if p["source_type"] == "function":
+            validate_function_parameter(p)
         declarations[p["name"]] = p
     for step in task["steps"]:
         validate_options(step, declarations)
@@ -454,7 +460,8 @@ def validate_config(task, run=False, allow_collection_inputs=False):
     ready = {
         n: p
         for n, p in declarations.items()
-        if p["source_type"] == "fixed" or (n in inherited and p["source_type"] != "expression")
+        if p["source_type"] in {"fixed", "function"}
+        or (n in inherited and p["source_type"] != "expression")
     }
 
     def check(step, available):

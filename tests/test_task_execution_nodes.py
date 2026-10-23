@@ -784,3 +784,54 @@ def test_interrupted_parallel_preserves_samples_and_only_reclassifies_unfinished
             ).fetchone()["n"]
             == 0
         )
+
+
+def test_task_uuid_shared_by_steps_and_regenerated_on_rerun(api, node_server):
+    from uuid import UUID
+
+    rest, create = assets(api, node_server)
+    header = [{"name": "X-Task-UUID", "binding": {"kind": "global", "parameter_name": "task_uuid"}}]
+    nodes = [rest("/value", 1), rest("/after", 2)]
+    for node in nodes:
+        node["headers"] = header
+    url, task = create(
+        nodes,
+        [
+            {
+                "name": "task_uuid",
+                "source_type": "function",
+                "value_type": "string",
+                "value": "generateUUID()",
+            }
+        ],
+    )
+    parameters = [{"name": "task_uuid", "source_type": "function", "value_type": "string", "value": "generateUUID()"}, {"name": "literal", "source_type": "fixed", "value_type": "string", "value": "generateUUID()"}]
+    response = api.put(url, json={"name": task["name"], "base_url": node_server["url"], "global_parameters": parameters, "steps": nodes})
+    assert response.status_code == 200, response.text
+    copied = api.post(url + "/copy", json={"name": "uuid-copy"})
+    assert copied.status_code == 201, copied.text
+    assert copied.json()["global_parameters"][0]["source_type"] == "function"
+    assert copied.json()["global_parameters"][0]["value"] == "generateUUID()"
+    generated = []
+    copied_url = url.rsplit("/", 1)[0] + f"/{copied.json()['id']}"
+    for run_url in (url, url, copied_url):
+        rid = api.post(run_url + "/runs").json()["id"]
+        deadline = time.monotonic() + 10
+        while True:
+            response = api.get(run_url + f"/runs/{rid}")
+            assert response.status_code == 200
+            result = response.json()
+            if result["run"]["status"] in {"succeeded", "failed", "blocked", "stopped"}:
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        assert result["run"]["status"] == "succeeded"
+        parameters = {p["name"]: p["value"] for p in result["global_parameters"]}
+        assert parameters["literal"] == "generateUUID()"
+        value = parameters["task_uuid"]
+        assert UUID(value).version == 4
+        assert [call[2]["X-Task-UUID"] for call in node_server["calls"][-2:]] == [value, value]
+        generated.append(value)
+    assert len(set(generated)) == 3
+    saved = api.get(url).json()
+    assert saved["global_parameters"][0]["value"] == "generateUUID()"

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<task name="SQL 数据准备与清理">
+  <taskStep order="10">
+    <sql driver="postgresql" timeoutSeconds="30">
+      <datasource>host=127.0.0.1 port=5432 dbname=business</datasource>
+      <username>test_user</username>
+      <password>replace-with-your-password</password>
+      <statement><![CDATA[INSERT INTO test_data (id, name) VALUES (10001, 'SQL 节点示例')]]></statement>
+    </sql>
+  </taskStep>
+  <finally>
+    <taskStep order="10">
+      <sql driver="postgresql">
+        <datasource>host=127.0.0.1 port=5432 dbname=business</datasource>
+        <username>test_user</username>
+        <password>replace-with-your-password</password>
+        <statement><![CDATA[DELETE FROM test_data WHERE id = 10001]]></statement>
+      </sql>
+    </taskStep>
+  </finally>
+</task>

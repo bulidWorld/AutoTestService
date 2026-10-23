@@ -7,12 +7,14 @@ import math
 import re
 from datetime import UTC, date, datetime, timedelta
 from email.utils import format_datetime
+from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.service.errors import BusinessError, invalid
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 FUNCTIONS = {
+    "generateUUID",
     "param",
     "now",
     "today",
@@ -28,6 +30,7 @@ FUNCTIONS = {
     "format_date",
 }
 ARITY = {
+    "generateUUID": (0, 0),
     "param": (1, 1),
     "now": (0, 0),
     "today": (0, 0),
@@ -57,6 +60,12 @@ ALLOWED_NODES = (
     ast.UAdd,
     ast.USub,
 )
+
+
+def validate_function_parameter(parameter):
+    """Task initializers accept only explicit, zero-argument built-ins."""
+    if parameter.get("value_type") != "string" or parameter.get("value") != "generateUUID()":
+        invalid("function 参数仅支持 string 类型的 generateUUID()", "global_parameters.value")
 
 
 def expression_tree(code, location):
@@ -210,6 +219,8 @@ class ExpressionContext:
         )
 
     def call(self, function, arguments):
+        if function == "generateUUID":
+            return str(uuid4())
         if function == "param":
             if arguments[0] not in self.values:
                 raise BusinessError(422, "PARAMETER_NOT_AVAILABLE", "表达式依赖的参数尚未赋值")

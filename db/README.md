@@ -113,3 +113,11 @@ AUTOTEST_DB_TESTS=1 .venv/bin/python -m pytest tests/test_execution_node_databas
 `050_task_execution_nodes.xml` 增加 `task_steps.options jsonb`，保存鉴权、条件、参数更新、动态等待及原始路径/查询策略；`wait_milliseconds` 扩展为 bigint，单次等待最多 30 天。状态字段增加业务终态 blocked，并发统计增加 blocked_count；不使用 PostgreSQL enum。运行参数赋值允许 JSON null，不受断言结果影响。部署时使用现有同步流程；本轮未执行迁移或测试。
 
 compute 参数使用 source_type=expression 及 task_parameters.expression_source JSONB，表达式位于 task_steps.options.expressions，默认时区为 Asia/Shanghai。首次创建与已有数据库迁移均已补定义；本轮未执行迁移或测试。
+
+## 单步骤重复执行（契约与字段定义）
+
+[070_step_reruns.xml](070_step_reruns.xml) 新增 `task_run_steps.input_snapshot`（可空 JSONB），
+保存步骤执行前已解析的实际输入；历史记录不回填。新增 `task_step_reruns` 保存独立重复执行
+状态、输入副本及输出，不覆盖源运行和任务组上下文。字段及事务语义见
+[重复执行设计](../docs/task-step-rerun.md)，REST 定义见现有 `rest-task.yaml` 的 `/steps/{run_step_id}/reruns`。
+本轮仅定义契约和结构，尚未实现输入采集、执行器和处理器，未执行数据库同步。

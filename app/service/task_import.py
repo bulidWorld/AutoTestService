@@ -76,7 +76,7 @@ def convert(root, base_url, lookup):
         config["global_parameters"].append(
             {
                 "name": node.findtext("name").strip(),
-                "source_type": "fixed",
+                "source_type": node.get("type"),
                 "value_type": node.get("valueType", "string"),
                 "value": typed_value(node),
                 "sensitive": node.get("sensitive", "false") in {"true", "1"},
@@ -109,7 +109,17 @@ def convert(root, base_url, lookup):
                 step["parent_step_index"] = parent
             step["options"] = options
             config["steps"].append(step)
-            if kind == "compute":
+            if kind == "sql":
+                options["sql"] = {
+                    "driver": child.get("driver"),
+                    "datasource": child.findtext("datasource"),
+                    "statement": child.findtext("statement"),
+                    "timeout_seconds": int(child.get("timeoutSeconds", "30")),
+                }
+                for key in ("username", "password"):
+                    if child.find(key) is not None:
+                        options["sql"][key] = child.findtext(key) or ""
+            elif kind == "compute":
                 options["timezone"] = child.get("timezone", "Asia/Shanghai")
                 options["expressions"] = []
                 for computed in child.findall("parameter"):

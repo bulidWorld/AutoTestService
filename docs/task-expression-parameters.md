@@ -28,6 +28,7 @@
 | 函数 | 结果与约定 |
 | --- | --- |
 | `param("name")` | 读取节点执行前的已赋参数；名称必须为字面字符串 |
+| `generateUUID()` | 生成标准带连字符 UUID v4 字符串，无参数；每次调用生成新值。需要多个 step 共享时，只生成一次并引用该全局参数。任务级参数显式设置 `type="function"`（API 为 `source_type: function`）、`valueType="string"`，value 完整设置为 `generateUUID()`，在每次 task 初始化时生成一次；`fixed` 始终保留字面量 |
 | `now()` | 当前时区的带时区 datetime，中间值 |
 | `today()` | 当前时区的执行日期，中间值 |
 | `date("YYYY-MM-DD")` | 严格日期；传入 date 或 datetime 时取节点时区的日期 |
