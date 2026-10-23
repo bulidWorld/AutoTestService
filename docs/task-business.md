@@ -43,7 +43,7 @@ AUTOTEST_DB_TESTS=1 .venv/bin/python -m pytest tests/test_interface_test.py -q
 
 无效输入或表达式返回 400；非 JSON 响应、缺少字段、类型不匹配返回 422，并提供错误分类及字段位置，不回显响应原值。
 
-XML 任务导入：`POST /api/v1/projects/{project_id}/tasks/import`，使用 multipart/form-data 的 `file`（.xml，每个最多 5 MiB）和 `base_url` 字段，`file` 可重复 1-20 次一次导入多个任务。格式见 [task.xsd](task.xsd)，完整示例见 [examples/task.xml](examples/task.xml)。步骤按正整数 order 升序执行，method/path 匹配本项目各文件当前版本的唯一接口；缺失或歧义均拒绝。整批原子导入：任一文件失败则全部回滚，错误定位到具体文件（`body.file.N (文件名)`）及 XPath/行号；同名任务返回 409。成功 201 按上传顺序返回任务数组。导入不发送请求，不创建或修改接口资产。
+XML 任务导入：`POST /api/v1/projects/{project_id}/tasks/import`，使用 multipart/form-data 的 `file`（.xml，每个最多 5 MiB）和 `base_url` 字段，`file` 可重复 1-100 次一次导入多个任务。格式见 [task.xsd](task.xsd)，完整示例见 [examples/task.xml](examples/task.xml)。步骤按正整数 order 升序执行，method/path 匹配本项目各文件当前版本的唯一接口；缺失或歧义均拒绝。整批原子导入：任一文件失败则全部回滚，错误定位到具体文件（`body.file.N (文件名)`）及 XPath/行号；同名任务返回 409。成功 201 按上传顺序返回任务数组。导入不发送请求，不创建或修改接口资产。
 
 `parameter` 的 type 必须为 fixed；`valueType` 默认为 string，其他类型使用 JSON 字面量。`extractParam` 声明由步骤响应赋值的全局参数，同名参数拒绝。body/kv 支持 key/value 或 key/parameter；引用参数时可省略 key，使用参数名。pathParams/queryParams/body 分别匹配 path/query/JSON 字段，不跨容器推断；kv 禁止 location 属性，嵌套 JSON 使用 Pointer。assertionCode 可省略，也可使用 CDATA 保存 Python 断言入口。入口必须为 `assert_response(responseBody, globalParam, statusCode, headers)`：statusCode 为真实 HTTP 状态码整数，headers 为小写响应头名到字符串列表的映射（保留重复头），业务 code 另行核对。responseBody 在空响应或非 JSON 时为 None；断言结果不影响参数提取和发布；未取到值赋 null。主流程、并发子 REST、清理 REST 均适用。
 

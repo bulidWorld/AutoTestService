@@ -10,7 +10,7 @@ from app.service.openapi_import import MAX_BYTES, pointer
 from app.service.task_config import TYPES, global_binding_name
 
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "docs/task.xsd"
-MAX_TASK_FILES = 20
+MAX_TASK_FILES = 100
 
 
 def file_issue(index, filename, exc):
