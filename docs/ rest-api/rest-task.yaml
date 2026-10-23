@@ -12,7 +12,7 @@ paths:
       tags:
       - 任务管理
       summary: 任务列表
-      description: 按名称不区分大小写包含搜索，按 updated_at 降序、id 升序分页。 当前阶段无需认证。
+      description: 按名称不区分大小写包含搜索，支持按上次执行结果筛选。默认按失败、未执行、排队或执行中、成功排序，同结果按 updated_at 降序、id 升序分页。上次执行取最近创建的运行（含任务组运行），排队或执行中的运行统一返回 queued；没有运行时为未执行。当前阶段无需认证。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
       - name: name
@@ -22,6 +22,13 @@ paths:
           type: string
           description: 搜索词
           example: 订单
+      - name: last_execution_result
+        in: query
+        description: 上次执行结果；failed 为失败，not_executed 为未执行，queued 为排队或执行中，succeeded 为成功；不传或空字符串不筛选。
+        schema:
+          type: string
+          enum: ['', failed, not_executed, queued, succeeded]
+          example: failed
       - $ref: '#/components/parameters/Page'
       - $ref: '#/components/parameters/PageSize'
       responses:
@@ -2054,6 +2061,17 @@ components:
           type: boolean
           description: 是否存在待运行或运行中记录
           example: false
+        last_execution_result:
+          type: string
+          enum: [failed, not_executed, queued, succeeded]
+          description: 最近创建的运行结果（含任务组运行）；failed 失败、not_executed 未执行、queued 排队或执行中、succeeded 成功。没有运行时为 not_executed。
+          example: succeeded
+        last_execution_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最近运行的开始时间；尚未开始时取运行创建时间，没有运行时为 null。
+          example: '2026-10-13T07:00:00Z'
       required:
       - name
       - description
@@ -2065,6 +2083,8 @@ components:
       - updated_at
       - step_count
       - has_active_run
+      - last_execution_result
+      - last_execution_time
       example:
         name: 订单流程
         description: 订单回归
@@ -2076,6 +2096,8 @@ components:
         updated_at: '2026-10-13T07:00:00Z'
         step_count: 3
         has_active_run: false
+        last_execution_result: succeeded
+        last_execution_time: '2026-10-13T07:00:00Z'
     CopyTask:
       type: object
       description: 复制到同一项目，重建全部任务、节点 ID，同时重映射 parent_step_id 与 rest_source.step_id；保留 headers、raw_body、等待、并发、清理及版本绑定，不复制运行历史或预览值。

@@ -378,9 +378,26 @@ def save(repository, path, body, creating=False):
 
 def listTasks(repository, path, query, body, upload):
     repository.project(path["project_id"])
+    result = query.get("last_execution_result", "")
     return repository.page(
-        "SELECT t.*, (SELECT count(*) FROM task_steps WHERE task_id=t.id) AS step_count, (EXISTS(SELECT 1 FROM task_runs WHERE task_id=t.id AND status IN ('queued','running')) OR EXISTS(SELECT 1 FROM task_collection_run_members m JOIN task_collection_runs c ON c.id=m.collection_run_id WHERE m.task_id=t.id AND c.status IN ('queued','running'))) AS has_active_run FROM tasks t WHERE project_id=%s AND strpos(lower(name),lower(%s))>0 ORDER BY updated_at DESC,id",
-        (path["project_id"], query.get("name", "")),
+        "SELECT t.*, (SELECT count(*) FROM task_steps WHERE task_id=t.id) AS step_count, "
+        "(EXISTS(SELECT 1 FROM task_runs WHERE task_id=t.id AND status IN ('queued','running')) "
+        "OR EXISTS(SELECT 1 FROM task_collection_run_members m "
+        "JOIN task_collection_runs c ON c.id=m.collection_run_id "
+        "WHERE m.task_id=t.id AND c.status IN ('queued','running'))) AS has_active_run, "
+        "coalesce(last_run.result,'not_executed') AS last_execution_result, "
+        "coalesce(last_run.started_at,last_run.created_at) AS last_execution_time "
+        "FROM tasks t LEFT JOIN LATERAL ("
+        "SELECT CASE WHEN status IN ('queued','running') THEN 'queued' ELSE status END AS result,"
+        "started_at,created_at FROM task_runs WHERE task_id=t.id "
+        "ORDER BY created_at DESC,id DESC LIMIT 1"
+        ") last_run ON true "
+        "WHERE t.project_id=%s AND strpos(lower(t.name),lower(%s))>0 "
+        "AND (%s='' OR coalesce(last_run.result,'not_executed')=%s) "
+        "ORDER BY CASE coalesce(last_run.result,'not_executed') "
+        "WHEN 'failed' THEN 0 WHEN 'not_executed' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END,"
+        "t.updated_at DESC,t.id",
+        (path["project_id"], query.get("name", ""), result, result),
         query,
     )
 
