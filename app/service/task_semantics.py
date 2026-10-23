@@ -8,6 +8,7 @@ from app.service.errors import BusinessError, invalid
 MAX_WAIT_MS = 30 * 24 * 60 * 60 * 1000
 OPTION_KEYS = {
     "sql",
+    "poll",
     "auth",
     "condition",
     "assignments",
@@ -25,12 +26,29 @@ def validate_options(step, declarations):
         invalid("options 含未知执行策略", "steps.options")
     from app.service.task_sql import validate_sql
 
-    validate_sql(step)
+    validate_sql(step, declarations)
     kind = step["step_type"]
     if kind != "rest" and options.keys() & {"auth", "assignments", "raw_path", "raw_query"}:
         invalid("鉴权、参数更新和原始路径查询仅适用于 REST", "steps.options")
     if kind != "wait" and "wait" in options:
         invalid("动态等待仅适用于 wait", "steps.options.wait")
+    poll = options.get("poll")
+    if poll is not None:
+        if (
+            kind != "rest"
+            or not isinstance(poll, dict)
+            or poll.keys() - {"max_attempts", "interval_milliseconds", "timeout_seconds"}
+            or any(
+                type(poll.get(key, default)) is not int
+                or not 1 <= poll.get(key, default) <= maximum
+                for key, default, maximum in (
+                    ("max_attempts", 10, 1000),
+                    ("interval_milliseconds", 1000, 3600000),
+                    ("timeout_seconds", 60, 86400),
+                )
+            )
+        ):
+            invalid("poll 仅适用于 REST，须配置有界次数、间隔及总超时", "steps.options.poll")
     condition = options.get("condition")
     if condition is not None:
         if (

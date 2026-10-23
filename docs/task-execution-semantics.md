@@ -88,7 +88,7 @@ API 条件为 `options.condition = {"parameter":"refreshToken","operator":"notEm
 
 API 动态等待为 `options.wait`，字段 `parameter/mode/unit/offset_parameter/offset_unit/offset_milliseconds`。duration 按相对时长计算；until 将 base 作为 Unix 时间戳或带时区 ISO 8601 时刻，计算 `base + 动态偏移 + 固定偏移 - 当前 UTC`。seconds 与 milliseconds 用于数值，iso8601 只适用于 until。动态偏移默认以秒计，固定偏移以毫秒计。计算结果不大于零时立即完成。
 
-固定等待范围 1～2592000000 毫秒，动态实际等待范围 0～2592000000 毫秒，均最多 30 天；超过上限、参数不可用或类型错误为 `WAIT_VALUE_INVALID`，不得猜测或截断时长。实际等待用单调时钟，可被服务停止事件立即中断，不占 HTTP 槽位或数据库连接。单节点七天等待不消耗额外节点，1000 节点上限不变。不隐式重试或循环请求；这里的时间等待不代表轮询成功。服务重启仍按 `EXECUTION_INTERRUPTED` 终结旧运行，不重放请求、不静默恢复七天计时。
+固定等待范围 1～2592000000 毫秒，动态实际等待范围 0～2592000000 毫秒，均最多 30 天；超过上限、参数不可用或类型错误为 `WAIT_VALUE_INVALID`，不得猜测或截断时长。实际等待用单调时钟，可被服务停止事件立即中断，不占 HTTP 槽位或数据库连接。单节点七天等待不消耗额外节点，1000 节点上限不变。不隐式重试或循环请求；REST 可使用下述 poll 显式轮询。服务重启仍按 `EXECUTION_INTERRUPTED` 终结旧运行，不重放请求、不静默恢复七天计时。
 
 ## 非法路径与查询的显式豁免
 
@@ -118,3 +118,13 @@ def assert_response(responseBody, globalParam, statusCode, headers):
 ## 部署与验证安排
 
 `task_steps.options` 为新增 JSONB 字段，`wait_milliseconds` 改为 bigint。迁移定义在 `db/050_task_execution_nodes.xml`，新建表定义同步更新。上线前执行项目现有数据库同步流程并重启应用。本轮按要求仅修改实现和规范，没有运行测试或数据库迁移；统一测试应覆盖全部 G1～G6、历史字段读写、敏感值与任务组停止路径。
+
+## 显式 REST 轮询
+
+在 rest 的所有 extractParam/updateParam 之后添加 `<poll maxAttempts="10" intervalMilliseconds="1000" timeoutSeconds="60"/>`，API 对应 `options.poll` 的 `max_attempts`、`interval_milliseconds`、`timeout_seconds`，默认值同 XML。次数范围 1～1000，间隔范围 1～3600000 毫秒，总时长范围 1～86400 秒。
+
+首次立即发送，使用节点进入时的参数快照重复同一请求。每次执行 assertionCode，true 即完成；没有断言时以 HTTP 2xx 完成。只有 HTTP_STATUS_ERROR 和 ASSERTION_FAILED 会继续轮询；连接错误、单次请求超时、断言异常和 blocked 立即终止。达到次数或总时长上限返回 POLL_EXHAUSTED，仍执行 finally。单次请求的网络超时受剩余总时长限制，已开始的断言按原有断言资源上限收尾。等待期间可响应服务停止及并发中止，不持有数据库连接；轮询节点沿用 REST 的 HTTP 并发许可。
+
+中间响应不发布参数，只从最终响应提取并执行更新。持久化和统计仍按一个逻辑 REST 节点，保存最终响应，请求耗时为各次请求累计值，节点耗时包含间隔。XML 轮询可用于 main、parallel 和 finally；它显式重复请求，配置时应确认接口可重复调用。进程重启仍终结旧运行，不恢复轮询。
+
+完整示例见 [拼接、SQL 绑定与轮询](examples/task-concat-sql-poll.xml)。

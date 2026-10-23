@@ -62,14 +62,14 @@
         <column name="assertion_code" type="text" comment="仅 REST 使用的可选 Python 业务断言；入口 assert_response(responseBody, globalParam, statusCode, headers)；可 raise Blocked(...)，空值按 HTTP 2xx 判断" nullable="true"/>
         <column name="created_at" type="timestamptz" comment="创建时间" nullable="false" default="now()"/>
         <column name="updated_at" type="timestamptz" comment="更新时间，业务显式更新" nullable="false" default="now()"/>
-        <column name="step_type" type="varchar(16)" nullable="false" comment="节点类型 rest/wait/parallel/compute；compute 不发送 HTTP" default="'rest'"/>
+        <column name="step_type" type="varchar(16)" nullable="false" comment="节点类型 rest/wait/parallel/compute/sql；compute 和 sql 不发送 HTTP" default="'rest'"/>
         <column name="execution_scope" type="varchar(16)" nullable="false" comment="main 主流程 / finally 清理流程" default="'main'"/>
         <column name="parent_step_id" type="integer" nullable="true" comment="本任务 main 根 parallel 父节点 ID；根节点为 NULL，业务校验归属与深度" ref-table="task_steps" ref-col="id"/>
         <column name="wait_milliseconds" type="bigint" nullable="true" comment="仅 wait 使用，固定等待 1～2592000000 毫秒，或 options.wait 动态等待"/>
         <column name="max_concurrency" type="integer" nullable="true" comment="仅 parallel 使用，活动子步骤上限 1～8，配置必填"/>
         <column name="headers" type="jsonb" nullable="false" comment="独立请求头绑定数组，仅含 name/binding；名称大小写不敏感且唯一" default="'[]'::jsonb"/>
         <column name="raw_body" type="jsonb" nullable="true" comment="仅 REST 使用且仅保存 text:string；原文不脱敏、不解析、不插值，与 body 绑定互斥；空 text 发送零字节"/>
-        <column name="options" type="jsonb" nullable="false" comment="显式节点策略：auth、condition、assignments、wait、raw_path、raw_query；保存到不可变运行快照" default="'{}'::jsonb"/>
+        <column name="options" type="jsonb" nullable="false" comment="显式节点策略：auth、condition、assignments、wait、raw_path、raw_query、timezone、expressions、sql、poll；expressions 支持 concat/str，sql.parameters 为有序全局参数名数组，poll 保存次数、间隔和时间上限；REST POST/PUT 原子保存并进入不可变运行快照" default="'{}'::jsonb"/>
       </columns>
       <constraints>
         <primary-key name="pk_task_steps" columns="id"/>
@@ -137,7 +137,7 @@
         <column name="duration_ms" type="bigint" comment="耗时毫秒" nullable="true"/>
         <column name="error_code" type="varchar(64)" comment="内部错误分类，含 UPSTREAM_FAILED/PARALLEL_ABORTED/CLEANUP_INPUT_UNAVAILABLE/EXECUTION_INTERRUPTED" nullable="true"/>
         <column name="error_message" type="text" comment="普通节点失败摘要；parallel 父节点记录确定失败子节点 ID、原始分类和不含响应内容的摘要，并发子节点保存阶段及异常类型和安全堆栈" nullable="true"/>
-        <column name="step_type" type="varchar(16)" nullable="false" comment="节点类型 rest/wait/parallel/compute；compute 不发送 HTTP" default="'rest'"/>
+        <column name="step_type" type="varchar(16)" nullable="false" comment="节点类型 rest/wait/parallel/compute/sql；compute 和 sql 不发送 HTTP" default="'rest'"/>
         <column name="execution_scope" type="varchar(16)" nullable="false" comment="快照执行范围 main/finally" default="'main'"/>
         <column name="parent_run_step_id" type="integer" nullable="true" comment="运行父节点 ID；启动事务创建全部节点后第二遍映射，根节点 NULL" ref-table="task_run_steps" ref-col="id"/>
         <column name="parallel_stats" type="jsonb" nullable="true" comment="仅 parallel 父节点保存 REST 汇总：rest_total、pending/running/succeeded/failed/blocked/skipped_count、request_count、response_count、response_time_sum_ms、avg/max/min_response_time_ms；无完整响应时 sum=0、avg/max/min=null，耗时保留三位小数；与子节点终态短事务原子合并，不保存逐请求响应或耗时明细"/>

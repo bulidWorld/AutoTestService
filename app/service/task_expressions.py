@@ -5,6 +5,7 @@ import calendar
 import json
 import math
 import re
+import secrets
 from datetime import UTC, date, datetime, timedelta
 from email.utils import format_datetime
 from uuid import uuid4
@@ -14,6 +15,8 @@ from app.service.errors import BusinessError, invalid
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 FUNCTIONS = {
+    "concat",
+    "str",
     "generateUUID",
     "param",
     "now",
@@ -30,6 +33,8 @@ FUNCTIONS = {
     "format_date",
 }
 ARITY = {
+    "concat": (1, 100),
+    "str": (1, 1),
     "generateUUID": (0, 0),
     "param": (1, 1),
     "now": (0, 0),
@@ -219,8 +224,24 @@ class ExpressionContext:
         )
 
     def call(self, function, arguments):
+        if function == "concat":
+            if any(not isinstance(value, str) for value in arguments):
+                raise ValueError
+            if sum(len(value) for value in arguments) > 65536:
+                raise ValueError
+            return "".join(arguments)
+        if function == "str":
+            value = arguments[0]
+            if type(value) not in (str, int, float, bool):
+                raise ValueError
+            if type(value) in (int, float):
+                self.number(value)
+            result = value if isinstance(value, str) else json.dumps(value, allow_nan=False)
+            if len(result) > 65536:
+                raise ValueError
+            return result
         if function == "generateUUID":
-            return str(uuid4())
+            return str(secrets.token_hex(4))
         if function == "param":
             if arguments[0] not in self.values:
                 raise BusinessError(422, "PARAMETER_NOT_AVAILABLE", "表达式依赖的参数尚未赋值")

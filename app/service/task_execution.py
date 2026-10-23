@@ -171,6 +171,48 @@ def apply_assertion(step, response, values):
     return judged
 
 
+def request_with_poll(config, step, values, request, stop=None, abort=None):
+    policy = (step.get("options") or {}).get("poll")
+    if policy is None:
+        return request_http(request, config.get("timeout_seconds", 30))
+    stop = stop or threading.Event()
+    deadline = time.monotonic() + policy.get("timeout_seconds", 60)
+    total_duration = 0
+    response = {
+        "response_status": None,
+        "response_headers": None,
+        "response_body": None,
+        "response_body_encoding": None,
+        "error_code": None,
+        "error_message": None,
+    }
+    for attempt in range(policy.get("max_attempts", 10)):
+        if stop.is_set() or (abort and abort.is_set()):
+            raise BusinessError(422, "EXECUTION_INTERRUPTED", "轮询已中断")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        response = request_http(request, min(config.get("timeout_seconds", 30), remaining))
+        total_duration += request.get("duration_ms", 0)
+        response = apply_assertion(step, response, copy.deepcopy(values))
+        request["duration_ms"] = total_duration
+        if response["error_code"] not in {"ASSERTION_FAILED", "HTTP_STATUS_ERROR"}:
+            return response
+        if attempt + 1 >= policy.get("max_attempts", 10):
+            break
+        interval_end = min(
+            deadline, time.monotonic() + policy.get("interval_milliseconds", 1000) / 1000
+        )
+        while time.monotonic() < interval_end:
+            if stop.is_set() or (abort and abort.is_set()):
+                raise BusinessError(422, "EXECUTION_INTERRUPTED", "轮询已中断")
+            stop.wait(min(0.1, max(0, interval_end - time.monotonic())))
+    response.update(
+        error_code="POLL_EXHAUSTED", error_message="轮询达到次数或时间上限，条件仍未满足"
+    )
+    return response
+
+
 def wait_until(milliseconds, stop):
     deadline = time.monotonic() + milliseconds / 1000
     while True:
@@ -189,7 +231,10 @@ def extract_values(config, step, response):
     # Extraction is independent of the HTTP/assertion verdict. Incomplete responses
     # have no usable document; every attempted source still assigns a null fallback.
     usable = dict(response)
-    if usable["error_code"] == "HTTP_STATUS_ERROR":
+    if usable["error_code"] in {
+        "HTTP_STATUS_ERROR", "ASSERTION_FAILED", "ASSERTION_EXECUTION_ERROR",
+        "ASSERTION_RETURN_TYPE_ERROR", "PRECONDITION_BLOCKED", "POLL_EXHAUSTED",
+    }:
         usable.update(error_code=None, error_message=None)
     try:
         document = response_json(usable, "global_parameters")
@@ -266,7 +311,7 @@ def preview(config, name):
             return {}, None
         if step["step_type"] == "sql":
             try:
-                return execute_sql(step), None
+                return execute_sql(step, inputs), None
             except Exception:
                 if abort:
                     abort.set()
@@ -286,9 +331,10 @@ def preview(config, name):
                 if abort and abort.is_set():
                     return {}, None
                 request = check_inputs(config, step, inputs)
-                response = request_http(request, config.get("timeout_seconds", 30))
+                response = request_with_poll(config, step, inputs, request, abort=abort)
                 writes = extract_values(config, step, response)
-                response = apply_assertion(step, response, inputs)
+                if (step.get("options") or {}).get("poll") is None:
+                    response = apply_assertion(step, response, inputs)
                 if response["error_code"]:
                     if abort:
                         abort.set()
@@ -584,7 +630,7 @@ class RunExecutor:
             if request:
                 stage = "rest"
                 LOGGER.info("发起 REST 请求", extra={"stage": stage})
-                response = request_http(request, config.get("timeout_seconds", 30))
+                response = request_with_poll(config, step, values, request, self.stop, abort)
                 LOGGER.info(
                     "REST 请求完成",
                     extra={
@@ -604,12 +650,13 @@ class RunExecutor:
                 ):
                     stage = "assertion"
                     LOGGER.info("执行业务断言", extra={"stage": stage})
-                response = apply_assertion(step, response, copy.deepcopy(values))
+                if (step.get("options") or {}).get("poll") is None:
+                    response = apply_assertion(step, response, copy.deepcopy(values))
                 if response["error_code"]:
                     raise BusinessError(422, response["error_code"], response["error_message"])
             elif step["step_type"] == "sql":
                 stage = "sql"
-                writes = execute_sql(step)
+                writes = execute_sql(step, values)
             elif step["step_type"] == "compute":
                 stage = "compute"
                 writes = compute_values(config, step, values)

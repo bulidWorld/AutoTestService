@@ -27,6 +27,8 @@
 
 | 函数 | 结果与约定 |
 | --- | --- |
+| `concat(s1, ...)` | 拼接 1～100 个字符串，结果最多 65536 字符；非字符串须先用 str 转换 |
+| `str(value)` | 标量转字符串，boolean 使用 true/false；拒绝 null、对象和数组，结果最多 65536 字符 |
 | `param("name")` | 读取节点执行前的已赋参数；名称必须为字面字符串 |
 | `generateUUID()` | 生成标准带连字符 UUID v4 字符串，无参数；每次调用生成新值。需要多个 step 共享时，只生成一次并引用该全局参数。任务级参数显式设置 `type="function"`（API 为 `source_type: function`）、`valueType="string"`，value 完整设置为 `generateUUID()`，在每次 task 初始化时生成一次；`fixed` 始终保留字面量 |
 | `now()` | 当前时区的带时区 datetime，中间值 |
@@ -78,3 +80,7 @@ compute 内 parameter 新增唯一全局参数声明，`valueType` 默认 string
 此片段展示参数与节点字段，完整请求仍需任务名称和 base_url。`expression_source.step_index` 指完整提交数组的下标，保存后映射为稳定 step_id，复制时重映射；与 rest_source 独立，表达式存入节点 options.expressions 并进入运行快照。表达式输出名称必须恰好覆盖该 compute 的全部声明。
 
 新增 `task_parameters.expression_source` JSONB 列；迁移定义已加入 `db/050_task_execution_nodes.xml`，新建表定义同步更新。按当前修改安排，本轮不执行测试或迁移，后续统一验证。
+
+## 字符串拼接
+
+在 compute 中使用 `concat("order-", str(param("id")), "-", param("suffix"))`，将输出参数整体绑定至 header、path/query/body 或 SQL 参数。字符串字面值中的 `{name}` 仍不做局部替换；原始请求体也不插值。

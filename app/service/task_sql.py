@@ -8,7 +8,7 @@ import psycopg
 from app.service.errors import BusinessError, invalid
 
 
-def validate_sql(step):
+def validate_sql(step, declarations=None):
     policy = (step.get("options") or {}).get("sql")
     if step["step_type"] != "sql":
         if policy is not None:
@@ -17,7 +17,15 @@ def validate_sql(step):
     if (
         not isinstance(policy, dict)
         or policy.keys()
-        - {"driver", "datasource", "username", "password", "statement", "timeout_seconds"}
+        - {
+            "driver",
+            "datasource",
+            "username",
+            "password",
+            "statement",
+            "timeout_seconds",
+            "parameters",
+        }
         or policy.get("driver") not in {"postgresql", "sqlite"}
         or any(
             not isinstance(policy.get(k), str) or not policy[k].strip()
@@ -31,10 +39,27 @@ def validate_sql(step):
     if policy["driver"] == "sqlite" and (policy.get("username") or policy.get("password")):
         invalid("SQLite 不支持用户名/密码", "steps.options.sql")
 
+    parameters = policy.get("parameters", [])
+    if (
+        not isinstance(parameters, list)
+        or len(parameters) > 100
+        or any(not isinstance(name, str) or not name.strip() for name in parameters)
+    ):
+        invalid("SQL parameters 须为至多 100 个全局参数名", "steps.options.sql.parameters")
+    if declarations is not None and set(parameters) - declarations.keys():
+        invalid("SQL 引用了未声明参数", "steps.options.sql.parameters")
 
-def execute_sql(step):
+
+def execute_sql(step, values=None):
     policy = step["options"]["sql"]
     timeout = policy.get("timeout_seconds", 30)
+    values = values or {}
+    names = policy.get("parameters", [])
+    if set(names) - values.keys():
+        raise BusinessError(422, "PARAMETER_NOT_AVAILABLE", "SQL 依赖的参数尚未赋值")
+    parameters = tuple(values[name] for name in names)
+    if any(type(value) not in (str, int, float, bool, type(None)) for value in parameters):
+        raise BusinessError(422, "SQL_PARAMETER_INVALID", "SQL 参数须为标量或 null")
     try:
         if policy["driver"] == "postgresql":
             credentials = {k: policy[k] for k in ("password",) if k in policy}
@@ -47,17 +72,20 @@ def execute_sql(step):
                 cursor.execute(
                     "SELECT set_config('statement_timeout', %s, true)", (str(timeout * 1000),)
                 )
-                cursor.execute(policy["statement"], prepare=True)
+                if parameters:
+                    cursor.execute(policy["statement"], parameters, prepare=True)
+                else:
+                    cursor.execute(policy["statement"], prepare=True)
         else:
             deadline = time.monotonic() + timeout
             db = sqlite3.connect(policy["datasource"], timeout=timeout)
             try:
                 db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
                 with db:
-                    db.execute(policy["statement"])
+                    db.execute(policy["statement"], parameters)
             finally:
                 db.close()
-    except (psycopg.Error, sqlite3.Error, ValueError, OSError):
+    except (psycopg.Error, sqlite3.Error, ValueError, OSError, OverflowError, TypeError):
         raise BusinessError(
             422,
             "SQL_EXECUTION_ERROR",

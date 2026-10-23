@@ -3,7 +3,7 @@ openapi: 3.0.3
 info:
   title: AutoTestService Task API
   version: 0.4.0
-  description: 统一任务节点配置与执行查询契约；支持 REST、固定等待、单层并发屏障与任务级 finally。直接采用新模型，不兼容旧步骤或 location=header 绑定。配置保存和启动前静态校验，执行中的业务失败通过运行查询返回。raw_body
+  description: 统一任务节点配置与执行查询契约；支持 REST 轮询、等待、compute 拼接及日期表达式、SQL 参数绑定、单层并发屏障与任务级 finally。直接采用新模型，不兼容旧步骤或 location=header 绑定。配置保存和启动前静态校验，执行中的业务失败通过运行查询返回。raw_body
                  原文不脱敏，其余敏感值沿用既有脱敏规则。
 paths:
   /api/v1/projects/{project_id}/tasks:
@@ -60,7 +60,7 @@ paths:
       tags:
       - 任务管理
       summary: 创建任务
-      description: 原子保存参数与执行树；草稿允许无步骤。steps 数组仅定义临时下标，调度按 position 与父子关系。
+      description: 原子保存参数与执行树；支持 compute 字符串拼接、SQL 驱动参数绑定及 REST 轮询。配置保存不求值、不连接 SQL 数据源、不发送业务请求。草稿允许无步骤。steps 数组仅定义临时下标，调度按 position 与父子关系。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
       responses:
@@ -104,6 +104,9 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/TaskWrite'
+            examples:
+              extendedCapabilities:
+                $ref: '#/components/examples/TaskCapabilities'
   /api/v1/projects/{project_id}/tasks/import:
     post:
       operationId: importTask
@@ -185,7 +188,7 @@ paths:
       tags:
       - 任务管理
       summary: 任务详情
-      description: 返回参数、步骤、文件名、固定版本、方法及路径；发现新版本仅提示。 当前阶段无需认证。
+      description: 返回参数、步骤、完整 options（含 expressions/sql.parameters/poll）、文件名、固定版本、方法及路径；表达式来源使用稳定 step_id，发现新版本仅提示。 当前阶段无需认证。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
       - $ref: '#/components/parameters/TaskId'
@@ -225,7 +228,7 @@ paths:
       tags:
       - 任务管理
       summary: 保存任务及步骤排序
-      description: 完整替换配置，保留已有节点 ID、新节点分配 ID。按项目 → 任务组 → 任务锁序，queued/running（含清理）或活动组预约时禁止修改，返回 409。
+      description: 完整替换配置，支持修改 compute 表达式、options.sql.parameters 和 options.poll；保留已有节点 ID、新节点分配 ID。省略的旧节点会删除，省略的可选策略会清除，运行历史快照不变。按项目 → 任务组 → 任务锁序，queued/running（含清理）或活动组预约时禁止修改，返回 409。
       parameters:
       - $ref: '#/components/parameters/ProjectId'
       - $ref: '#/components/parameters/TaskId'
@@ -270,6 +273,9 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/TaskWrite'
+            examples:
+              extendedCapabilities:
+                $ref: '#/components/examples/TaskCapabilities'
     delete:
       operationId: deleteTask
       tags:
@@ -833,6 +839,61 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 components:
+  examples:
+    TaskCapabilities:
+      summary: compute 拼接、SQL 参数绑定和 REST 轮询（接口 ID 须替换为项目中 GET /orders/{id} 的实际值）
+      value:
+        name: 拼接、SQL绑定与轮询
+        base_url: http://127.0.0.1:8081
+        global_parameters:
+        - name: order_id
+          source_type: fixed
+          value_type: integer
+          value: 42
+        - name: label
+          source_type: expression
+          value_type: string
+          expression_source:
+            step_index: 0
+        steps:
+        - step_type: compute
+          execution_scope: main
+          position: 10
+          options:
+            expressions:
+            - name: label
+              expression: concat("order-", str(param("order_id")))
+        - step_type: sql
+          execution_scope: main
+          position: 20
+          options:
+            sql:
+              driver: sqlite
+              datasource: /tmp/task-orders.db
+              statement: UPDATE orders SET label = ? WHERE id = ?
+              parameters:
+              - label
+              - order_id
+        - step_type: rest
+          execution_scope: main
+          position: 30
+          file_id: 1
+          interface_id: 1
+          version: 1
+          bindings:
+          - location: path
+            name: id
+            binding:
+              kind: global
+              parameter_name: order_id
+          headers: []
+          assertion_code: "def assert_response(responseBody, globalParam, statusCode, headers):\n    return\
+            \ statusCode == 200 and responseBody.get(\"status\") == \"ready\""
+          options:
+            poll:
+              max_attempts: 10
+              interval_milliseconds: 1000
+              timeout_seconds: 60
   schemas:
     StepRerun:
       type: object
@@ -1537,36 +1598,67 @@ components:
         execution_scope: main
         parent_run_step_id: null
       additionalProperties: false
+    PollPolicy:
+      type: object
+      additionalProperties: false
+      description: REST 专用。立即发送并按断言或 HTTP 2xx 判定成功；仅 HTTP_STATUS_ERROR/ASSERTION_FAILED 重试，达到上限为 POLL_EXHAUSTED。只发布最终响应提取，统计为一个逻辑 REST 节点。
+      properties:
+        max_attempts:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 10
+        interval_milliseconds:
+          type: integer
+          minimum: 1
+          maximum: 3600000
+          default: 1000
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 86400
+          default: 60
+    SqlPolicy:
+      type: object
+      additionalProperties: false
+      description: 仅 SQL 节点使用。连接配置随任务保存；错误信息不回显凭据。SQL 不做插值，不提取查询结果；不要使用事务控制语句。
+      required: [driver, datasource, statement]
+      properties:
+        driver:
+          type: string
+          enum: [postgresql, sqlite]
+        datasource:
+          type: string
+          minLength: 1
+          description: PostgreSQL libpq 连接串或 URI；SQLite 文件路径。
+        username:
+          type: string
+        password:
+          type: string
+        statement:
+          type: string
+          minLength: 1
+        parameters:
+          type: array
+          maxItems: 100
+          description: 顺序引用已可用全局参数，PostgreSQL 使用 %s、SQLite 使用 ? 驱动绑定；只接受标量或 null。
+          items:
+            type: string
+            minLength: 1
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 300
+          default: 30
     ExecutionOptions:
       type: object
-      description: 显式节点执行策略；对应 XML 的 auth、taskStep 条件属性、updateParam、wait 动态属性及 rawPath/rawQuery。未知键拒绝。
+      description: 显式节点执行策略；对应 XML 的 auth、taskStep 条件属性、updateParam、wait 动态属性、rawPath/rawQuery、compute、sql 和 rest/poll。未知键拒绝。
       additionalProperties: false
       properties:
+        poll:
+          $ref: '#/components/schemas/PollPolicy'
         sql:
-          type: object
-          additionalProperties: false
-          description: 仅 SQL 节点使用。连接配置随任务保存；错误信息不回显凭据。SQL 不做插值，不提取查询结果；不要使用事务控制语句。
-          required: [driver, datasource, statement]
-          properties:
-            driver:
-              type: string
-              enum: [postgresql, sqlite]
-            datasource:
-              type: string
-              minLength: 1
-              description: PostgreSQL libpq 连接串或 URI；SQLite 文件路径。
-            username:
-              type: string
-            password:
-              type: string
-            statement:
-              type: string
-              minLength: 1
-            timeout_seconds:
-              type: integer
-              minimum: 1
-              maximum: 300
-              default: 30
+          $ref: '#/components/schemas/SqlPolicy'
         timezone:
           type: string
           minLength: 1
@@ -1576,7 +1668,7 @@ components:
           type: array
           minItems: 1
           maxItems: 100
-          description: compute 专用，名称须对应 expression_source 为本节点的参数。只允许白名单函数和有界数值四则运算；param 只接受字面参数名，同节点输出不可互引。
+          description: compute 专用，名称须对应 expression_source 为本节点的参数。支持 concat 字符串拼接及 str 标量转换、白名单日期函数和有界数值四则运算；param 只接受字面参数名，同节点输出不可互引。
           items:
             type: object
             additionalProperties: false

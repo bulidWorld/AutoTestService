@@ -144,7 +144,7 @@
       <xs:choice>
         <xs:element name="value" type="xs:string">
           <xs:annotation>
-            <xs:documentation xml:lang="zh">字段字面值，与同级 parameter 二选一。按 kv 的 valueType 解析，并校验是否符合目标接口字段 Schema。string 可为空；整个字符串若恰为 {id}，会按现有规则引用全局参数 id，不支持字符串插值拼接。</xs:documentation>
+            <xs:documentation xml:lang="zh">字段字面值，与同级 parameter 二选一。按 kv 的 valueType 解析，并校验是否符合目标接口字段 Schema。string 可为空；整个字符串若恰为 {id}，会按现有规则引用全局参数 id，动态拼接先使用 compute 的 concat/str 生成参数，再用 parameter 整体引用。</xs:documentation>
           </xs:annotation>
         </xs:element>
         <xs:element name="parameter" type="nonEmpty">
@@ -226,6 +226,7 @@
         </xs:annotation>
       </xs:element>
       <xs:element name="updateParam" type="UpdateParameter" minOccurs="0" maxOccurs="unbounded"/>
+      <xs:element name="poll" type="PollPolicy" minOccurs="0"/>
     </xs:sequence>
     <xs:attribute name="method" use="required">
       <xs:annotation>
@@ -258,20 +259,31 @@
       <xs:extension base="RestStep"/>
     </xs:complexContent>
   </xs:complexType>
+  <xs:complexType name="PollPolicy">
+    <xs:annotation><xs:documentation>显式重复当前 REST 请求，首次立即发送。每次执行 assertionCode，返回 true 即完成；未配置断言时以 HTTP 2xx 完成。仅 HTTP_STATUS_ERROR 和 ASSERTION_FAILED 继续轮询；连接错误、请求超时、断言异常和 blocked 立即终止。次数或总时长耗尽为 POLL_EXHAUSTED；只发布最后一次响应的提取结果，中间响应不更新参数。请求绑定使用进入节点时的参数快照；无隐式循环嵌套。可用于 main、parallel 和 finally，请确认重复请求的业务含义。统计沿用单个逻辑 REST 节点，记录最终响应及累计请求耗时。</xs:documentation></xs:annotation>
+    <xs:attribute name="maxAttempts" default="10"><xs:simpleType><xs:restriction base="xs:integer"><xs:minInclusive value="1"/><xs:maxInclusive value="1000"/></xs:restriction></xs:simpleType></xs:attribute>
+    <xs:attribute name="intervalMilliseconds" default="1000"><xs:simpleType><xs:restriction base="xs:integer"><xs:minInclusive value="1"/><xs:maxInclusive value="3600000"/></xs:restriction></xs:simpleType></xs:attribute>
+    <xs:attribute name="timeoutSeconds" default="60"><xs:simpleType><xs:restriction base="xs:integer"><xs:minInclusive value="1"/><xs:maxInclusive value="86400"/></xs:restriction></xs:simpleType></xs:attribute>
+  </xs:complexType>
   <xs:complexType name="SqlStep">
-    <xs:annotation><xs:documentation>SQL 节点：支持 PostgreSQL/SQLite。每节点独立连接与事务，成功提交、失败回滚；不插值、不提取结果、不计入 HTTP 统计。statement 为一条 SQL，建议 CDATA；不包含 BEGIN/COMMIT 等事务控制。PostgreSQL datasource 为 libpq 连接串或 URI，用户名密码可单独配置；SQLite 为文件路径且不支持用户名密码。凭据随任务配置保存，请限制任务访问权限。可用于 main、parallel 和 finally。</xs:documentation></xs:annotation>
+    <xs:annotation><xs:documentation>SQL 节点：支持 PostgreSQL/SQLite。每节点独立连接与事务，成功提交、失败回滚；支持 parameters/parameter 按顺序引用已可用全局参数，重复名称可重复绑定；PostgreSQL 使用 %s，SQLite 使用 ? 占位符，由驱动绑定值，不拼接 SQL，不绑定表名或列名。参数仅支持标量或 null，不提取结果、不计入 HTTP 统计。statement 为一条 SQL，建议 CDATA；不包含 BEGIN/COMMIT 等事务控制。PostgreSQL datasource 为 libpq 连接串或 URI，用户名密码可单独配置；SQLite 为文件路径且不支持用户名密码。凭据随任务配置保存，请限制任务访问权限。可用于 main、parallel 和 finally。</xs:documentation></xs:annotation>
     <xs:sequence>
       <xs:element name="datasource" type="nonEmpty"/>
       <xs:element name="username" type="xs:string" minOccurs="0"/>
       <xs:element name="password" type="xs:string" minOccurs="0"/>
       <xs:element name="statement" type="nonEmpty"/>
+      <xs:element name="parameters" minOccurs="0">
+        <xs:complexType><xs:sequence>
+          <xs:element name="parameter" type="nonEmpty" minOccurs="0" maxOccurs="100"/>
+        </xs:sequence></xs:complexType>
+      </xs:element>
     </xs:sequence>
     <xs:attribute name="driver" use="required"><xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="postgresql"/><xs:enumeration value="sqlite"/></xs:restriction></xs:simpleType></xs:attribute>
     <xs:attribute name="timeoutSeconds" default="30"><xs:simpleType><xs:restriction base="xs:integer"><xs:minInclusive value="1"/><xs:maxInclusive value="300"/></xs:restriction></xs:simpleType></xs:attribute>
   </xs:complexType>
   <xs:complexType name="ComputeStep">
     <xs:annotation>
-      <xs:documentation>运行时受限表达式参数节点，不发 HTTP。每次执行时捕获一个 now；所有参数表达式读取同一节点前快照，不互相依赖，全部成功后原子发布。默认 timezone=Asia/Shanghai，可指定 IANA 时区。参数 value 是受限表达式，日期/时刻须显式格式化为 string；例如 http_date(add_seconds(now(), 3600))；支持无参 generateUUID() 生成 UUID v4 字符串，每次调用独立生成。若多个 step 需要共享，应在首个 compute 中生成一次再引用同名参数，或使用任务级 parameters 内的 generateUUID() 初始化。无效日期、空依赖、类型不匹配或计算失败使节点失败，不以 null 冒充计算结果；仍尝试 finally。</xs:documentation>
+      <xs:documentation>运行时受限表达式参数节点，不发 HTTP。每次执行时捕获一个 now；所有参数表达式读取同一节点前快照，不互相依赖，全部成功后原子发布。默认 timezone=Asia/Shanghai，可指定 IANA 时区。参数 value 是受限表达式，日期/时刻须显式格式化为 string；例如 http_date(add_seconds(now(), 3600))；concat("prefix-", str(param("id"))) 支持字符串拼接；concat 接受 1～100 个 string，str 显式将标量转字符串（boolean 为 true/false），不接受 null 或对象数组，结果最多 65536 字符；支持无参 generateUUID() 生成 UUID v4 字符串，每次调用独立生成。若多个 step 需要共享，应在首个 compute 中生成一次再引用同名参数，或使用任务级 parameters 内的 generateUUID() 初始化。无效日期、空依赖、类型不匹配或计算失败使节点失败，不以 null 冒充计算结果；仍尝试 finally。</xs:documentation>
     </xs:annotation>
     <xs:sequence>
       <xs:element name="parameter" type="pair" minOccurs="1" maxOccurs="100">
@@ -284,7 +296,7 @@
   </xs:complexType>
   <xs:complexType name="WaitStep">
     <xs:annotation>
-      <xs:documentation xml:lang="zh">固定 milliseconds 与动态 parameter 二选一。动态 mode=duration（默认）表示相对时长，until 表示绝对到期时刻；unit 默认 seconds，可为 milliseconds 或（until 专用）带时区 iso8601。可加 offsetParameter（默认 seconds，可指定 offsetUnit=milliseconds）及 offsetMilliseconds，计算 base+offset-now；过去时刻立即完成，单次最多 30 天。动态值无效时 WAIT_VALUE_INVALID，不猜测时长；不支持请求轮询循环。</xs:documentation>
+      <xs:documentation xml:lang="zh">固定 milliseconds 与动态 parameter 二选一。动态 mode=duration（默认）表示相对时长，until 表示绝对到期时刻；unit 默认 seconds，可为 milliseconds 或（until 专用）带时区 iso8601。可加 offsetParameter（默认 seconds，可指定 offsetUnit=milliseconds）及 offsetMilliseconds，计算 base+offset-now；过去时刻立即完成，单次最多 30 天。动态值无效时 WAIT_VALUE_INVALID，不猜测时长；请求轮询通过 rest/poll 显式配置。</xs:documentation>
     </xs:annotation>
     <xs:attribute name="milliseconds" type="Milliseconds" use="optional">
       <xs:annotation>

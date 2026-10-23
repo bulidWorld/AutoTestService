@@ -116,6 +116,10 @@ def convert(root, base_url, lookup):
                     "statement": child.findtext("statement"),
                     "timeout_seconds": int(child.get("timeoutSeconds", "30")),
                 }
+                if child.find("parameters") is not None:
+                    options["sql"]["parameters"] = [
+                        item.text.strip() for item in child.findall("parameters/parameter")
+                    ]
                 for key in ("username", "password"):
                     if child.find(key) is not None:
                         options["sql"][key] = child.findtext(key) or ""
@@ -177,6 +181,16 @@ def convert(root, base_url, lookup):
                         headers=[],
                         assertion_code=child.findtext("assertionCode"),
                     )
+                    poll = child.find("poll")
+                    if poll is not None:
+                        options["poll"] = {
+                            key: int(poll.get(xml_key, default))
+                            for key, xml_key, default in (
+                                ("max_attempts", "maxAttempts", "10"),
+                                ("interval_milliseconds", "intervalMilliseconds", "1000"),
+                                ("timeout_seconds", "timeoutSeconds", "60"),
+                            )
+                        }
                     auth = child.find("auth")
                     if auth is not None:
                         options["auth"] = dict(auth.attrib)

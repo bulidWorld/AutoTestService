@@ -698,6 +698,7 @@ def getTaskRun(repository, path, query, body, upload):
         if result["parent_run_step_id"] is not None:
             continue
         result.pop("run_id", None)
+        result.pop("input_snapshot", None)
         if result["step_type"] != "parallel":
             result.pop("parallel_stats", None)
         else:

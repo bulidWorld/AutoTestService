@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 示意接口：GET /orders/{id}，path id 为 integer，响应 {"status":"ready"}。
+     先准备本地 SQLite /tmp/task-orders.db 和表 orders(id INTEGER, label TEXT)。 -->
+<task name="拼接标签、绑定 SQL 并轮询订单">
+  <parameters>
+    <parameter type="fixed" valueType="integer"><name>order_id</name><value>42</value></parameter>
+  </parameters>
+  <taskStep order="10">
+    <compute>
+      <parameter><name>label</name><value>concat("order-", str(param("order_id")))</value></parameter>
+    </compute>
+  </taskStep>
+  <taskStep order="20">
+    <sql driver="sqlite">
+      <datasource>/tmp/task-orders.db</datasource>
+      <statement>UPDATE orders SET label = ? WHERE id = ?</statement>
+      <parameters><parameter>label</parameter><parameter>order_id</parameter></parameters>
+    </sql>
+  </taskStep>
+  <taskStep order="30">
+    <rest method="GET" path="/orders/{id}">
+      <pathParams><kv><key>id</key><parameter>order_id</parameter></kv></pathParams>
+      <assertionCode><![CDATA[
+def assert_response(responseBody, globalParam, statusCode, headers):
+    return statusCode == 200 and responseBody.get("status") == "ready"
+]]></assertionCode>
+      <extractParam><name>status</name><value>status</value></extractParam>
+      <poll maxAttempts="10" intervalMilliseconds="1000" timeoutSeconds="60"/>
+    </rest>
+  </taskStep>
+</task>

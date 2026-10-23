@@ -121,3 +121,11 @@ compute 参数使用 source_type=expression 及 task_parameters.expression_sourc
 状态、输入副本及输出，不覆盖源运行和任务组上下文。字段及事务语义见
 [重复执行设计](../docs/task-step-rerun.md)，REST 定义见现有 `rest-task.yaml` 的 `/steps/{run_step_id}/reruns`。
 本轮仅定义契约和结构，尚未实现输入采集、执行器和处理器，未执行数据库同步。
+
+## 字符串拼接、SQL 参数绑定与 REST 轮询
+
+任务配置使用现有 `task_steps.options jsonb` 保存 `expressions`、`sql.parameters` 和 `poll`，
+compute 结果声明通过 `task_parameters.expression_source` 关联稳定步骤 ID。
+新增和修改通过现有任务 POST/PUT 接口在同一事务内保存，无需新表或重复列；读取、复制和运行快照保留这些策略。
+XML 列注释已同步描述 SQL 节点及三项能力，既有数据库执行同步即可更新。
+完整请求及更新规则见 [REST 配置说明](../docs/task-rest-capabilities.md)。

@@ -2,7 +2,7 @@
 <database name="auto_test_service" dialect="postgresql" source="context/requirement/3-1.extend_task_xsd/design.md">
   <statements>
     <statement id="execution-nodes-task_steps-step_type">
-      <description>节点类型 rest/wait/parallel；组合与取值由业务校验</description>
+      <description>节点类型 rest/wait/parallel/compute/sql；组合与取值由业务校验</description>
       <sql>ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS step_type varchar(16) DEFAULT 'rest' NOT NULL</sql>
     </statement>
     <statement id="execution-nodes-task_steps-execution_scope">
@@ -30,7 +30,7 @@
       <sql>ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS raw_body jsonb</sql>
     </statement>
     <statement id="execution-nodes-task_run_steps-step_type">
-      <description>快照节点类型 rest/wait/parallel</description>
+      <description>快照节点类型 rest/wait/parallel/compute/sql</description>
       <sql>ALTER TABLE task_run_steps ADD COLUMN IF NOT EXISTS step_type varchar(16) DEFAULT 'rest' NOT NULL</sql>
     </statement>
     <statement id="execution-nodes-task_run_steps-execution_scope">
@@ -86,7 +86,7 @@
       <sql>CREATE INDEX IF NOT EXISTS ix_task_run_steps_run_scope_parent_position ON task_run_steps (run_id, execution_scope, parent_run_step_id, position, id)</sql>
     </statement>
     <statement id="execution-policy-options">
-      <description>显式鉴权、条件、参数更新、动态等待及负向路径查询策略</description>
+      <description>显式鉴权、条件、参数更新、动态等待、负向路径查询、compute 表达式、SQL 参数绑定和 REST 轮询策略</description>
       <sql>ALTER TABLE task_steps ADD COLUMN IF NOT EXISTS options jsonb DEFAULT '{}'::jsonb NOT NULL</sql>
     </statement>
     <statement id="execution-policy-long-wait">

@@ -1,0 +1,78 @@
+{
+  "name": "拼接、SQL绑定与轮询",
+  "base_url": "http://127.0.0.1:8081",
+  "global_parameters": [
+    {
+      "name": "order_id",
+      "source_type": "fixed",
+      "value_type": "integer",
+      "value": 42
+    },
+    {
+      "name": "label",
+      "source_type": "expression",
+      "value_type": "string",
+      "expression_source": {
+        "step_index": 0
+      }
+    }
+  ],
+  "steps": [
+    {
+      "step_type": "compute",
+      "execution_scope": "main",
+      "position": 10,
+      "options": {
+        "expressions": [
+          {
+            "name": "label",
+            "expression": "concat(\"order-\", str(param(\"order_id\")))"
+          }
+        ]
+      }
+    },
+    {
+      "step_type": "sql",
+      "execution_scope": "main",
+      "position": 20,
+      "options": {
+        "sql": {
+          "driver": "sqlite",
+          "datasource": "/tmp/task-orders.db",
+          "statement": "UPDATE orders SET label = ? WHERE id = ?",
+          "parameters": [
+            "label",
+            "order_id"
+          ]
+        }
+      }
+    },
+    {
+      "step_type": "rest",
+      "execution_scope": "main",
+      "position": 30,
+      "file_id": 1,
+      "interface_id": 1,
+      "version": 1,
+      "bindings": [
+        {
+          "location": "path",
+          "name": "id",
+          "binding": {
+            "kind": "global",
+            "parameter_name": "order_id"
+          }
+        }
+      ],
+      "headers": [],
+      "assertion_code": "def assert_response(responseBody, globalParam, statusCode, headers):\n    return statusCode == 200 and responseBody.get(\"status\") == \"ready\"",
+      "options": {
+        "poll": {
+          "max_attempts": 10,
+          "interval_milliseconds": 1000,
+          "timeout_seconds": 60
+        }
+      }
+    }
+  ]
+}

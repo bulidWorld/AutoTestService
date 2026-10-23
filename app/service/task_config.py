@@ -465,6 +465,9 @@ def validate_config(task, run=False, allow_collection_inputs=False):
     }
 
     def check(step, available):
+        sql = (step.get("options") or {}).get("sql")
+        if sql and set(sql.get("parameters", [])) - available.keys():
+            invalid("SQL 只能读取执行前已可用的参数", "steps.options.sql.parameters")
         if step["step_type"] == "compute":
             references = set()
             for item in step["options"]["expressions"]:

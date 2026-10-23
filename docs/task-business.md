@@ -123,3 +123,5 @@ AUTOTEST_DB_TESTS=1 .venv/bin/python -m pytest tests/test_task_execution_nodes.p
 ```
 
 compute 在实际执行时捕获一个当前时刻，默认 Asia/Shanghai，同节点全部表达式共享该时刻与执行前参数快照。参数来源为 expression，expression_source 引用 compute，表达式保存于 options.expressions。全部计算成功并符合 value_type 后原子发布；无效日期或计算错误不发布部分结果，主流程失败后仍进入 finally。compute 不发 HTTP，不占 HTTP 槽位；参数预览同样在预览执行时求值。
+
+字符串拼接、SQL 参数绑定和 REST 轮询均可通过任务 POST/PUT 接口新增或修改，JSON 请求、字段映射和完整替换规则见 [REST 配置说明](task-rest-capabilities.md)。
