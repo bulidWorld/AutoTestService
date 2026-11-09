@@ -7,6 +7,8 @@
         <column name="project_id" type="integer" comment="所属项目" nullable="false" ref-table="projects" ref-col="id"/>
         <column name="name" type="varchar(120)" comment="去首尾空白后项目内区分大小写唯一" nullable="false"/>
         <column name="description" type="varchar(2000)" comment="描述，缺省为空字符串" nullable="false"/>
+        <column name="base_url" type="text" comment="可选的任务组运行地址；组运行时覆盖成员任务运行地址" nullable="true"/>
+        <column name="datasource" type="jsonb" comment="可选的任务组 SQL 数据源连接配置；组运行时覆盖成员 SQL 节点连接配置" nullable="true"/>
         <column name="created_at" type="timestamptz" comment="创建时间，业务写入" nullable="false"/>
         <column name="updated_at" type="timestamptz" comment="更新时间，业务写入" nullable="false"/>
       </columns>
@@ -122,6 +124,14 @@
     </table>
   </tables>
   <statements>
+    <statement id="collection-base-url">
+      <description>为已有任务组增加可选运行地址</description>
+      <sql>ALTER TABLE task_collections ADD COLUMN IF NOT EXISTS base_url text</sql>
+    </statement>
+    <statement id="collection-datasource">
+      <description>为已有任务组增加可选 SQL 数据源连接配置</description>
+      <sql>ALTER TABLE task_collections ADD COLUMN IF NOT EXISTS datasource jsonb</sql>
+    </statement>
     <statement id="collection-member-runtime-inputs">
       <description>支持从首版设计表定义幂等升级运行期字段</description>
       <sql>ALTER TABLE task_collection_run_members ADD COLUMN IF NOT EXISTS input_parameters jsonb NOT NULL DEFAULT '{}'::jsonb</sql>

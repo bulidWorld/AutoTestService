@@ -12,11 +12,33 @@ from test_task_business import asset, bare_config
 from app.api.contract import load_contract
 from app.config.settings import ROOT
 from app.service.errors import BusinessError
-from app.service.task_collections import validate_members
+from app.service.task_collections import apply_overrides, validate_members, validate_overrides
 
 api, database, server = fixtures.api, fixtures.database, fixtures.server
 
 SPEC = load_contract(ROOT / "docs/ rest-api/rest-task-collection.yaml")
+
+
+def test_collection_runtime_overrides_only_connection_fields():
+    config = {
+        "base_url": "https://task.example/api",
+        "steps": [{"step_type": "sql", "options": {"sql": {
+            "driver": "postgresql", "datasource": "old", "username": "old-user",
+            "password": "old-secret", "statement": "SELECT 1", "parameters": ["id"],
+            "timeout_seconds": 7,
+        }}}, {"step_type": "rest", "options": {}}],
+    }
+    collection = {"base_url": "https://group.example/api", "datasource": {
+        "driver": "sqlite", "datasource": "/tmp/group.db",
+    }}
+    validate_overrides(collection["base_url"], collection["datasource"])
+    result = apply_overrides(config, collection)
+    assert result["base_url"] == collection["base_url"]
+    assert result["steps"][0]["options"]["sql"] == {
+        "driver": "sqlite", "datasource": "/tmp/group.db", "statement": "SELECT 1",
+        "parameters": ["id"], "timeout_seconds": 7,
+    }
+    assert result["steps"][1] == {"step_type": "rest", "options": {}}
 
 
 def checked(response, schema, status=200):

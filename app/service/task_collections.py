@@ -7,10 +7,37 @@ from itertools import groupby
 from psycopg.types.json import Jsonb
 
 from app.service.errors import invalid
-from app.service.task_config import validate_config
+from app.service.task_config import validate_base_url, validate_config
 from app.service.task_expressions import expression_parameters
 
 LOGGER = logging.getLogger(__name__)
+
+
+def validate_overrides(base_url, datasource):
+    if base_url is not None:
+        validate_base_url(base_url, "body.base_url")
+    if datasource is None:
+        return
+    if (datasource.get("driver") not in {"postgresql", "sqlite"}
+        or not isinstance(datasource.get("datasource"), str)
+        or not datasource["datasource"].strip()
+        or any(not isinstance(datasource.get(k, ""), str) for k in ("username", "password"))
+        or (datasource["driver"] == "sqlite" and
+            (datasource.get("username") or datasource.get("password")))):
+        invalid("任务组 SQL 数据源配置无效", "body.datasource")
+
+
+def apply_overrides(config, collection):
+    if collection.get("base_url") is not None:
+        config["base_url"] = collection["base_url"]
+    if collection.get("datasource") is not None:
+        for step in config["steps"]:
+            if step["step_type"] == "sql":
+                policy = step["options"]["sql"]
+                for key in ("driver", "datasource", "username", "password"):
+                    policy.pop(key, None)
+                policy.update(collection["datasource"])
+    return config
 
 
 def validate_members(members):

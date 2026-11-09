@@ -6,7 +6,7 @@ from psycopg.types.json import Jsonb
 from app.repository.projects import required
 from app.repository.rest_task import active, configuration, create_run
 from app.service.errors import BusinessError, invalid
-from app.service.task_collections import validate_members
+from app.service.task_collections import apply_overrides, validate_members, validate_overrides
 from app.service.task_config import scrub, secret_strings
 
 SYSTEM_OPERATIONS = set()
@@ -35,6 +35,13 @@ def members(repository, row):
     return row
 
 
+def public_collection(row):
+    row = dict(row)
+    if row.get("datasource") and "password" in row["datasource"]:
+        row["datasource"] = dict(row["datasource"], password="***")
+    return row
+
+
 def idle(repository, cid):
     if repository.one(
         "SELECT id FROM task_collection_runs WHERE collection_id=%s "
@@ -51,12 +58,12 @@ def listTaskCollections(repository, path, query, body, upload):
         (path["project_id"],),
         query,
     )
-    result["items"] = [members(repository, r) for r in result["items"]]
+    result["items"] = [public_collection(members(repository, r)) for r in result["items"]]
     return result
 
 
 def getTaskCollection(repository, path, query, body, upload):
-    return members(repository, collection(repository, path))
+    return public_collection(members(repository, collection(repository, path)))
 
 
 def save(repository, path, body, creating=False):
@@ -67,6 +74,9 @@ def save(repository, path, body, creating=False):
     name = body["name"].strip()
     if not name:
         invalid("任务组名称不得为空", "body.name")
+    base_url = body.get("base_url")
+    datasource = body.get("datasource")
+    validate_overrides(base_url, datasource)
     if repository.one(
         "SELECT id FROM task_collections WHERE project_id=%s AND name=%s "
         "AND (%s::integer IS NULL OR id<>%s)",
@@ -82,15 +92,15 @@ def save(repository, path, body, creating=False):
         invalid("成员重复或不属于当前项目", "body.members")
     if creating:
         row = repository.one(
-            "INSERT INTO task_collections(project_id,name,description,created_at,updated_at) "
-            "VALUES(%s,%s,%s,now(),now()) RETURNING *",
-            (path["project_id"], name, body.get("description", "")),
+            "INSERT INTO task_collections(project_id,name,description,base_url,datasource,created_at,updated_at) "
+            "VALUES(%s,%s,%s,%s,%s,now(),now()) RETURNING *",
+            (path["project_id"], name, body.get("description", ""), base_url, Jsonb(datasource) if datasource else None),
         )
     else:
         row = repository.one(
-            "UPDATE task_collections SET name=%s,description=%s,updated_at=now() "
+            "UPDATE task_collections SET name=%s,description=%s,base_url=%s,datasource=%s,updated_at=now() "
             "WHERE id=%s RETURNING *",
-            (name, body.get("description", ""), old["id"]),
+            (name, body.get("description", ""), base_url, Jsonb(datasource) if datasource else None, old["id"]),
         )
         repository.db.execute(
             "DELETE FROM task_collection_members WHERE collection_id=%s",
@@ -101,7 +111,7 @@ def save(repository, path, body, creating=False):
             "INSERT INTO task_collection_members(collection_id,task_id,position) VALUES(%s,%s,%s)",
             (row["id"], member["task_id"], member["position"]),
         )
-    return members(repository, row)
+    return public_collection(members(repository, row))
 
 
 def createTaskCollection(repository, path, query, body, upload):
@@ -140,7 +150,9 @@ def startTaskCollectionRun(repository, path, query, body, upload):
         configs.append(
             {
                 "position": member["position"],
-                "config": configuration(repository, dict(path, task_id=member["task_id"])),
+                "config": apply_overrides(
+                    configuration(repository, dict(path, task_id=member["task_id"])), row
+                ),
             }
         )
     validate_members(configs)

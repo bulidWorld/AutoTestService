@@ -406,27 +406,31 @@ def stringify(value):
     return json.dumps(value, ensure_ascii=False) if isinstance(value, bool) else str(value)
 
 
-def validate_config(task, run=False, allow_collection_inputs=False):
-    for index, step in enumerate(task["steps"]):
-        code = validate_assertion(step.get("assertion_code"), f"body.steps.{index}.assertion_code")
-        if "assertion_code" in step:
-            step["assertion_code"] = code
+def validate_base_url(base_url, location="body.base_url"):
     try:
-        parsed = urlsplit(task["base_url"])
+        parsed = urlsplit(base_url)
         valid_port = parsed.port is None or 1 <= parsed.port <= 65535
     except ValueError:
-        invalid("运行地址格式或端口无效", "body.base_url")
+        invalid("运行地址格式或端口无效", location)
     if (
         parsed.scheme not in ("http", "https")
         or not parsed.hostname
         or parsed.username
         or parsed.password
-        or "?" in task["base_url"]
-        or "#" in task["base_url"]
+        or "?" in base_url
+        or "#" in base_url
         or not valid_port
-        or any(c.isspace() for c in task["base_url"])
+        or any(c.isspace() for c in base_url)
     ):
-        invalid("运行地址必须为无凭据、query 或 fragment 的 HTTP/HTTPS 地址", "body.base_url")
+        invalid("运行地址必须为无凭据、query 或 fragment 的 HTTP/HTTPS 地址", location)
+
+
+def validate_config(task, run=False, allow_collection_inputs=False):
+    for index, step in enumerate(task["steps"]):
+        code = validate_assertion(step.get("assertion_code"), f"body.steps.{index}.assertion_code")
+        if "assertion_code" in step:
+            step["assertion_code"] = code
+    validate_base_url(task["base_url"])
     if run and not task["steps"]:
         invalid("运行至少一个步骤", "body.steps")
     from app.service.task_nodes import parameter_sources, siblings, validate_structure
@@ -569,6 +573,9 @@ def safe_task(task):
         if p["redacted"]:
             p.pop("value", None)
     for step in result["steps"]:
+        sql = (step.get("options") or {}).get("sql")
+        if sql and "password" in sql:
+            sql["password"] = "***"
         for field in step.get("bindings", []) + step.get("headers", []):
             b = field["binding"]
             if b["kind"] == "literal":

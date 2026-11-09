@@ -464,6 +464,33 @@ components:
           description: 任务组描述。
           maxLength: 2000
           default: ''
+        base_url: &collection_base_url
+          type: string
+          nullable: true
+          description: 可选的任务组运行地址；组运行时覆盖所有成员任务的 base_url。须为无凭据、query 或 fragment 的 HTTP/HTTPS 地址。
+          minLength: 1
+          format: uri
+        datasource: &collection_datasource
+          type: object
+          nullable: true
+          description: 可选的任务组 SQL 数据源；组运行时覆盖所有成员 SQL 节点的 driver、datasource、username、password，保留节点语句、参数及超时。
+          additionalProperties: false
+          required: [driver, datasource]
+          properties:
+            driver:
+              type: string
+              enum: [postgresql, sqlite]
+            datasource:
+              type: string
+              minLength: 1
+              description: PostgreSQL libpq 连接串或 URI；SQLite 文件路径。
+            username:
+              type: string
+              description: 仅 PostgreSQL 使用。
+            password:
+              type: string
+              format: password
+              description: 仅 PostgreSQL 使用；读取时应脱敏。
         members: &id003
           type: array
           description: 成员任务必须来自同一项目；同一 task_id 不可重复。
@@ -493,6 +520,8 @@ components:
       properties:
         name: *id001
         description: *id002
+        base_url: *collection_base_url
+        datasource: *collection_datasource
         members: *id003
         id:
           type: integer
