@@ -1,0 +1,11 @@
+.git
+.venv
+**/__pycache__
+**/*.pyc
+config/*.secret
+config/application-local.yaml
+logs
+run
+tests
+context
+scripts

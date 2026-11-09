@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autotest-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: autotest-backend
+  template:
+    metadata:
+      labels:
+        app: autotest-backend
+    spec:
+      containers:
+        - name: backend
+          # 部署前替换镜像地址，并提供数据库配置和密码文件。
+          image: YOUR_REGISTRY/autotest-backend:1.0.0
+          ports:
+            - name: http
+              containerPort: 80
+          volumeMounts:
+            - name: database-config
+              mountPath: /service/config/application-cluster.yaml
+              subPath: application-cluster.yaml
+              readOnly: true
+            - name: database-password
+              mountPath: /service/config/database.secret
+              subPath: database.secret
+              readOnly: true
+          env:
+            - name: APP_CONFIG
+              value: config/application-cluster.yaml
+          readinessProbe:
+            httpGet:
+              path: /api/v1/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: database-config
+          configMap:
+            name: autotest-backend-config
+        - name: database-password
+          secret:
+            secretName: autotest-backend-db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: autotest-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: autotest-backend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
