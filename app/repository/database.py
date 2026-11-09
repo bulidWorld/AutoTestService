@@ -1,5 +1,7 @@
 """Shared PostgreSQL connection configuration; credentials never enter CLI arguments."""
 
+import os
+
 import psycopg
 
 from app.config.settings import absolute, load_settings
@@ -16,6 +18,11 @@ def connection_options(admin: bool = False) -> dict:
         "connect_timeout": database["connect_timeout"],
     }
     if admin and source.get("auth") == "peer":
+        return options
+    if not admin and "DB_PASSWORD" in os.environ:
+        if not os.environ["DB_PASSWORD"]:
+            raise ValueError("数据库密码环境变量不能为空")
+        options["password"] = os.environ["DB_PASSWORD"]
         return options
     secret = absolute(source["password_file"])
     if secret.exists():

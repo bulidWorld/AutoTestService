@@ -11,6 +11,7 @@ COPY app ./app
 COPY config ./config
 COPY docs ./docs
 COPY db ./db
+COPY scripts/sync_schema.py ./scripts/sync_schema.py
 
-EXPOSE 31010
-CMD ["python", "-m", "app.main"]
+EXPOSE 32010
+CMD ["sh", "-c", "python scripts/sync_schema.py && exec python -m app.main"]

@@ -8,4 +8,5 @@ logs
 run
 tests
 context
-scripts
+scripts/*
+!scripts/sync_schema.py

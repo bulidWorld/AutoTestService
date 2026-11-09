@@ -32,6 +32,16 @@ def load_settings() -> dict:
             base = merge(base, yaml.safe_load(absolute(override).read_text()) or {})
         if not isinstance(base, dict):
             raise TypeError("配置必须为键值结构")
+        for env_name, section, key, convert in (
+            ("DB_HOST", "database", "host", str),
+            ("DB_PORT", "database", "port", int),
+            ("DB_NAME", "database", "name", str),
+            ("DB_USER", "database", "user", str),
+            ("DB_POOL_SIZE", "database", "pool_size", int),
+            ("SERVER_PORT", "service", "port", int),
+        ):
+            if env_name in os.environ:
+                base[section][key] = convert(os.environ[env_name])
         service = base["service"]
         if not isinstance(service["port"], int) or not 1 <= service["port"] <= 65535:
             raise ValueError("服务端口必须在 1～65535 之间")
@@ -42,6 +52,8 @@ def load_settings() -> dict:
             raise ValueError("数据库配置无效")
         if not 1 <= database["port"] <= 65535:
             raise ValueError("数据库端口无效")
+        if "pool_size" in database and database["pool_size"] <= 0:
+            raise ValueError("数据库连接池大小无效")
         log = base["logging"]
         if log["max_bytes"] <= 0 or log["backup_count"] <= 0:
             raise ValueError("日志轮转大小及保留数必须为正数")
