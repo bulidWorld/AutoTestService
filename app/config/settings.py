@@ -55,8 +55,8 @@ def load_settings() -> dict:
         if "pool_size" in database and database["pool_size"] <= 0:
             raise ValueError("数据库连接池大小无效")
         log = base["logging"]
-        if log["max_bytes"] <= 0 or log["backup_count"] <= 0:
-            raise ValueError("日志轮转大小及保留数必须为正数")
+        if not isinstance(log["retention_days"], int) or log["retention_days"] <= 0:
+            raise ValueError("日志保留天数必须为正整数")
         if not absolute(base["contract"]).is_file():
             raise ValueError(f"找不到 OpenAPI 契约文件：{absolute(base['contract'])}")
         return base

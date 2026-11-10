@@ -5,7 +5,7 @@ import logging
 import traceback
 from contextvars import ContextVar
 from datetime import UTC, datetime
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 
 from app.config.settings import absolute
 
@@ -54,7 +54,17 @@ class JsonFormatter(logging.Formatter):
                 {"file": frame.filename, "line": frame.lineno, "function": frame.name}
                 for frame in traceback.extract_tb(record.exc_info[2])
             ]
+        elif record.levelno >= logging.ERROR and not data.get("stack"):
+            data["stack"] = [
+                {"file": frame.filename, "line": frame.lineno, "function": frame.name}
+                for frame in traceback.extract_stack()[:-2]
+            ]
         return json.dumps(data, ensure_ascii=False)
+
+
+class LevelFilter(logging.Filter):
+    def filter(self, record):
+        return record.levelno < logging.ERROR
 
 
 def request_context(request):
@@ -88,23 +98,29 @@ def configure_logging(settings):
         handler.close()
     root.setLevel(config["level"])
     for filename, level in (("application.log", config["level"]), ("error.log", "ERROR")):
-        handler = RotatingFileHandler(
+        handler = TimedRotatingFileHandler(
             directory / filename,
-            maxBytes=config["max_bytes"],
-            backupCount=config["backup_count"],
+            when="midnight",
+            backupCount=config["retention_days"],
             encoding="utf-8",
         )
         handler.setFormatter(formatter)
         handler.setLevel(level)
+        if filename == "application.log":
+            handler.addFilter(LevelFilter())
         root.addHandler(handler)
+    error_console = logging.StreamHandler()
+    error_console.setLevel(logging.ERROR)
+    error_console.setFormatter(formatter)
+    root.addHandler(error_console)
     access = logging.getLogger("access")
     for handler in access.handlers[:]:
         access.removeHandler(handler)
         handler.close()
-    handler = RotatingFileHandler(
+    handler = TimedRotatingFileHandler(
         directory / "access.log",
-        maxBytes=config["max_bytes"],
-        backupCount=config["backup_count"],
+        when="midnight",
+        backupCount=config["retention_days"],
         encoding="utf-8",
     )
     handler.setFormatter(formatter)

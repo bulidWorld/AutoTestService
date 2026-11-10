@@ -7,9 +7,8 @@ service:
 contract: docs/ rest-api/rest-project.yaml
 logging:
   level: INFO
-  directory: /var/service/log/auto-test-service
-  max_bytes: 104857600
-  backup_count: 30
+  directory: /var/service/auto-test-service/log
+  retention_days: 7
 database:
   host: 127.0.0.1
   port: 5432

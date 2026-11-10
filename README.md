@@ -19,7 +19,7 @@ scripts/           标准启停和数据库脚本
 db/                XML 表定义与 database.xsd
 docs/ rest-api/rest-project.yaml  HTTP 接口唯一契约
 tests/             基础行为验证
-logs/              预留目录；默认实际日志在 /var/service/log/auto-test-service/
+logs/              预留目录；默认实际日志在 /var/service/auto-test-service/log/
 run/               PID 和部署操作锁
 ```
 
@@ -224,10 +224,10 @@ curl --fail http://127.0.0.1:31010/api/v1/ready
 export APP_CONFIG=config/application-prod.yaml
 ```
 
-该操作会替换之前选择的 local 覆盖配置，不会继承其中的数据库或日志设置。生产默认日志目录为 `/var/service/log/auto-test-service/`。由有权限的部署人员为服务账号创建目录；下面示例以当前账号作为服务账号：
+该操作会替换之前选择的 local 覆盖配置，不会继承其中的数据库或日志设置。生产默认日志目录为 `/var/service/auto-test-service/log/`。由有权限的部署人员为服务账号创建目录；下面示例以当前账号作为服务账号：
 
 ```bash
-sudo install -d -m 0750 -o "$(id -un)" -g "$(id -gn)" /var/service/log/auto-test-service
+sudo install -d -m 0750 -o "$(id -un)" -g "$(id -gn)" /var/service/auto-test-service/log
 ./scripts/start.sh
 ./scripts/status.sh
 ```
@@ -353,7 +353,7 @@ main、parallel 子 REST 和 finally 清理 REST 规则相同。
 升级已有数据库执行 `bash scripts/db_sync.sh`，为 `task_steps` 增加可空的
 `assertion_code` 列；`start.sh` 也会自动同步。重启后新代码生效。
 
-application.log、error.log、access.log 使用 JSON，包含时间、级别、服务、进程、线程、模块、请求 ID。按大小轮转，默认 100 MiB、保留 30 个历史文件。HTTP 响应返回 `X-Request-ID`。不记录请求头、体、查询参数或原始异常文本，异常记录类型；后续业务日志同样必须遵守敏感信息规则。
+application.log、error.log、access.log 分别记录业务、错误、HTTP 请求日志，使用 JSON，包含时间、级别、服务、进程、线程、模块、请求 ID。每天滚动，保留 7 天；错误日志同时输出到控制台，并记录异常堆栈或调用栈。HTTP 响应返回 `X-Request-ID`。不记录请求头、体、查询参数或原始异常文本，异常记录类型；后续业务日志同样必须遵守敏感信息规则。
 
 ```bash
 .venv/bin/python -m pytest
@@ -385,14 +385,14 @@ AUTOTEST_DB_TESTS=1 .venv/bin/pytest -q
 信息均保留在接口详情中。因此 `docs/ rest-api/rest-project.yaml` 可直接作为导入文件；导入后可
 浏览全部接口及其上传定义。其他请求体媒体类型仍返回定位明确的错误。
 
-业务请求失败（包括 YAML 校验失败）会写入 `application.log` 和 `error.log`，记录
+业务请求失败（包括 YAML 校验失败）会写入 `error.log`，记录
 `operation`、路由模板、HTTP 状态、`code`、`detail`、`issues` 以及 `request_id`。
 `access.log` 记录请求耗时、路由模板和 operationId。内部异常额外记录异常类型及
 调用栈的文件、函数、行号；不记录上传全文、请求头、查询参数、局部变量或异常原文。
 使用响应头 `X-Request-ID` 的值在日志目录中搜索，即可关联同一次请求：
 
 ```bash
-rg '响应头中的请求ID' /var/service/log/auto-test-service/*.log
+rg '响应头中的请求ID' /var/service/auto-test-service/log/*.log
 ```
 
 

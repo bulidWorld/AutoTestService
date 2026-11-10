@@ -3,4 +3,4 @@ service:
   host: 0.0.0.0
 logging:
   level: INFO
-  directory: /var/service/log/auto-test-service
+  directory: /var/service/auto-test-service/log
